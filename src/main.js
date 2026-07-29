@@ -374,7 +374,8 @@ module.exports = class GibAtlasPlugin extends Plugin {
     env.customCache = new FileModelCache(path.join(this.pluginPath, 'models'));
     env.backends.onnx.wasm.numThreads = 1;
     env.backends.onnx.wasm.proxy = false;
-    env.backends.onnx.wasm.wasmPaths = { mjs: moduleUrl, wasm };
+    env.backends.onnx.wasm.wasmBinary = wasm;
+    env.backends.onnx.wasm.wasmPaths = { mjs: moduleUrl };
     this.extractor = await pipeline('feature-extraction', MODEL_ID, {
       dtype: 'q8',
       progress_callback: (event) => {
