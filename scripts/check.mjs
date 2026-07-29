@@ -4,9 +4,9 @@ for (const file of ['main.js', 'manifest.json', 'styles.css']) {
   if (!fs.existsSync(new URL(`../${file}`, import.meta.url))) throw new Error(`${file} is missing`);
 }
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
-if (manifest.id !== 'gib-atlas' || manifest.version !== '0.2.1') throw new Error('Unexpected manifest identity');
+if (manifest.id !== 'gib-atlas' || manifest.version !== '0.3.0') throw new Error('Unexpected manifest identity');
 const main = fs.readFileSync(new URL('../main.js', import.meta.url), 'utf8');
-for (const marker of ['Gib Atlas', 'Xenova/bge-small-en-v1.5', 'VIEW_TYPE', 'documentChunks', 'stableCommunities', 'buildRegionLabels', 'commonSignalRemoval']) {
+for (const marker of ['Gib Atlas', 'Xenova/bge-small-en-v1.5', 'VIEW_TYPE', 'documentChunks', 'stableCommunities', 'buildRegionLabels', 'buildPropertyProfiles', 'buildRoadNetwork', 'commonSignalRemoval']) {
   if (!main.includes(marker)) throw new Error(`Bundle is missing ${marker}`);
 }
 if (!main.includes('wasmBinary = wasm') || !main.includes('wasmPaths = { mjs: moduleUrl }')) {

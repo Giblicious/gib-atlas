@@ -13,6 +13,20 @@ Gib Atlas is an experimental, fully local semantic map for Obsidian. Version 0.1
 - Collision-only relaxation anchored to the semantic projection
 - Pan, zoom, hover, and click-to-open
 
+## Hamlet proof of concept
+
+The optional hamlet presentation turns the same semantic plane into deterministic rural cartography:
+
+- Notes become cottages and local lots
+- Larger notes receive larger properties
+- Semantic outliers become open farmsteads
+- Topic breadth creates field density and outbuildings
+- Structural complexity creates cottage annexes
+- Sparse roads preserve strong graph relationships rather than arbitrary proximity
+- Road hierarchy distinguishes local lanes, neighborhood connections, and regional bridges
+
+Every variation is seeded from the note path, so the generated settlement remains stable between sessions.
+
 The model is downloaded once, then cached locally. Note text and embeddings are not sent to a service.
 
 ## Install with BRAT

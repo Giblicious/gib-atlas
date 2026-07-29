@@ -20,8 +20,10 @@ const DEFAULT_SETTINGS = {
   commonSignalRemoval: 0.3,
   neighborhoodDetail: 1.35,
   showConnections: true,
+  showRoads: true,
   showRegions: true,
-  showRegionLabels: true
+  showRegionLabels: true,
+  defaultPresentation: 'town'
 };
 
 function cachePath(root, request) {
@@ -386,6 +388,154 @@ async function buildRegionLabels(records, communities, extractor) {
   });
 }
 
+function sourceStats(source) {
+  const cleaned = cleanText(source);
+  return {
+    characters: cleaned.length,
+    words: phraseTokens(cleaned).length,
+    headings: (source.match(/^\s{0,3}#{1,6}\s+.+$/gm) || []).length,
+    manualLinks: (source.match(/\[\[[^\]]+\]\]/g) || []).length
+  };
+}
+
+function percentileRanks(values) {
+  const sorted = values.map((value, index) => ({ value, index })).sort((a, b) => a.value - b.value || a.index - b.index);
+  const ranks = Array(values.length).fill(0);
+  sorted.forEach((item, rank) => { ranks[item.index] = values.length <= 1 ? 0.5 : rank / (values.length - 1); });
+  return ranks;
+}
+
+function clamp01(value) { return Math.max(0, Math.min(1, value)); }
+
+function buildPropertyProfiles(records, graphData, communities) {
+  const sizeRank = percentileRanks(records.map((record) => Math.log1p(record.stats?.words || 0)));
+  const headingRank = percentileRanks(records.map((record) => record.stats?.headings || 0));
+  const linkRank = percentileRanks(records.map((record) => record.stats?.manualLinks || 0));
+  const density = graphData.nearest.map((neighbors) => neighbors.length ? neighbors.reduce((sum, item) => sum + item.score, 0) / neighbors.length : 0);
+  const densityRank = percentileRanks(density);
+  const weightedDegree = Array(records.length).fill(0);
+  const degree = Array(records.length).fill(0);
+  const bridge = Array(records.length).fill(0);
+  for (const edge of graphData.edges) {
+    weightedDegree[edge.a] += edge.weight; weightedDegree[edge.b] += edge.weight;
+    degree[edge.a]++; degree[edge.b]++;
+    if (communities.neighborhood[edge.a] !== communities.neighborhood[edge.b]) { bridge[edge.a] += edge.weight; bridge[edge.b] += edge.weight; }
+  }
+  const centralityRank = percentileRanks(weightedDegree);
+  const bridgeRank = percentileRanks(bridge);
+  const breadth = records.map((record) => {
+    const vectors = record.chunkVectors || [];
+    if (vectors.length < 2) return 0;
+    let difference = 0, pairs = 0;
+    for (let i = 0; i < vectors.length; i++) for (let j = i + 1; j < vectors.length; j++) { difference += 1 - dot(vectors[i], vectors[j]); pairs++; }
+    return difference / pairs;
+  });
+  const breadthRank = percentileRanks(breadth);
+  return records.map((record, index) => {
+    const isolation = 1 - densityRank[index];
+    const fringe = Boolean(communities.fringe[index]);
+    const rurality = clamp01(isolation * 0.68 + (fringe ? 0.32 : 0));
+    const lotScale = clamp01(sizeRank[index] * 0.58 + rurality * 0.72);
+    return {
+      size: sizeRank[index],
+      lotScale,
+      lotRadius: 5 + lotScale * 10,
+      buildingScale: 0.45 + sizeRank[index] * 0.75,
+      rurality,
+      centrality: centralityRank[index],
+      topicBreadth: breadthRank[index],
+      connections: degree[index],
+      bridgeStrength: bridgeRank[index],
+      sectionComplexity: headingRank[index],
+      manualLinks: linkRank[index],
+      character: fringe || rurality > 0.64 ? 'farmstead' : centralityRank[index] > 0.7 ? 'village-center' : 'cottage'
+    };
+  });
+}
+
+function relaxPropertyCollisions(basePoints, profiles) {
+  const center = basePoints.reduce((sum, point) => ({ x: sum.x + point.x / basePoints.length, y: sum.y + point.y / basePoints.length }), { x: 0, y: 0 });
+  const anchors = basePoints.map((point) => ({ x: center.x + (point.x - center.x) * 1.65, y: center.y + (point.y - center.y) * 1.65 }));
+  const points = anchors.map((point) => ({ ...point }));
+  for (let pass = 0; pass < 260; pass++) {
+    const movement = points.map(() => ({ x: 0, y: 0 }));
+    for (let i = 0; i < points.length; i++) {
+      for (let j = i + 1; j < points.length; j++) {
+        let dx = points[j].x - points[i].x, dy = points[j].y - points[i].y;
+        let distance = Math.hypot(dx, dy);
+        const minimum = profiles[i].lotRadius + profiles[j].lotRadius + 3;
+        if (distance >= minimum) continue;
+        if (distance < 0.001) { dx = ((i * 19 + j * 23) % 13) - 6; dy = ((i * 31 + j * 11) % 13) - 6; distance = Math.hypot(dx, dy) || 1; }
+        const force = (minimum - distance) * 0.28;
+        movement[i].x -= dx / distance * force; movement[i].y -= dy / distance * force;
+        movement[j].x += dx / distance * force; movement[j].y += dy / distance * force;
+      }
+    }
+    for (let i = 0; i < points.length; i++) {
+      const anchorStrength = 0.006 + profiles[i].centrality * 0.004;
+      points[i].x += movement[i].x + (anchors[i].x - points[i].x) * anchorStrength;
+      points[i].y += movement[i].y + (anchors[i].y - points[i].y) * anchorStrength;
+    }
+  }
+  return points;
+}
+
+function buildRoadNetwork(edges, communities, profiles) {
+  const selected = new Map();
+  const key = (edge) => `${Math.min(edge.a, edge.b)}:${Math.max(edge.a, edge.b)}`;
+  const add = (edge, kind) => {
+    const id = key(edge), current = selected.get(id);
+    const priority = { lane: 1, village: 2, regional: 3 };
+    if (!current || priority[kind] > priority[current.kind]) selected.set(id, { ...edge, kind });
+  };
+  const neighborhoods = [...new Set(communities.neighborhood)].filter((value) => value >= 0);
+  for (const neighborhood of neighborhoods) {
+    const members = communities.neighborhood.map((value, index) => value === neighborhood ? index : -1).filter((index) => index >= 0);
+    const memberSet = new Set(members);
+    const candidates = edges.filter((edge) => memberSet.has(edge.a) && memberSet.has(edge.b)).sort((a, b) => b.weight - a.weight);
+    const parent = new Map(members.map((member) => [member, member]));
+    const find = (node) => { let root = node; while (parent.get(root) !== root) root = parent.get(root); while (parent.get(node) !== node) { const next = parent.get(node); parent.set(node, root); node = next; } return root; };
+    for (const edge of candidates) {
+      const a = find(edge.a), b = find(edge.b);
+      if (a !== b) { parent.set(a, b); add(edge, 'lane'); }
+    }
+    const extraLimit = Math.max(0, Math.floor(members.length * 0.22));
+    candidates.filter((edge) => !selected.has(key(edge))).slice(0, extraLimit).forEach((edge) => add(edge, 'lane'));
+  }
+  const villageBridges = new Map(), regionalBridges = new Map();
+  for (const edge of edges) {
+    const regionA = communities.region[edge.a], regionB = communities.region[edge.b];
+    const neighborhoodA = communities.neighborhood[edge.a], neighborhoodB = communities.neighborhood[edge.b];
+    if (regionA >= 0 && regionA === regionB && neighborhoodA !== neighborhoodB) {
+      const id = [neighborhoodA, neighborhoodB].sort((a, b) => a - b).join(':');
+      if (!villageBridges.has(id) || edge.weight > villageBridges.get(id).weight) villageBridges.set(id, edge);
+    } else if (regionA >= 0 && regionB >= 0 && regionA !== regionB) {
+      const id = [regionA, regionB].sort((a, b) => a - b).join(':');
+      if (!regionalBridges.has(id) || edge.weight > regionalBridges.get(id).weight) regionalBridges.set(id, edge);
+    }
+  }
+  villageBridges.forEach((edge) => add(edge, 'village'));
+  regionalBridges.forEach((edge) => add(edge, 'regional'));
+  return [...selected.values()].map((road) => ({ ...road, importance: clamp01((profiles[road.a].bridgeStrength + profiles[road.b].bridgeStrength) / 2) }));
+}
+
+function hashString(value) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
+  return hash >>> 0;
+}
+
+function lotPolygon(point, profile, pathKey) {
+  const random = mulberry32(hashString(pathKey));
+  const count = 9;
+  const rotation = random() * Math.PI * 2;
+  return Array.from({ length: count }, (_, index) => {
+    const angle = rotation + index / count * Math.PI * 2;
+    const radius = profile.lotRadius * (0.82 + random() * 0.28);
+    return { x: point.x + Math.cos(angle) * radius, y: point.y + Math.sin(angle) * radius };
+  });
+}
+
 class AtlasView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -393,6 +543,7 @@ class AtlasView extends ItemView {
     this.camera = { x: 0, y: 0, zoom: 1 };
     this.hovered = -1;
     this.drag = null;
+    this.mode = plugin.settings.defaultPresentation || 'town';
   }
   getViewType() { return VIEW_TYPE; }
   getDisplayText() { return 'Gib Atlas'; }
@@ -406,6 +557,15 @@ class AtlasView extends ItemView {
     setIcon(icon, 'map');
     identity.createEl('strong', { text: 'Gib Atlas' });
     this.statusEl = toolbar.createDiv({ cls: 'gib-atlas-status', text: 'Preparing atlas…' });
+    this.modeButton = toolbar.createEl('button', { attr: { 'aria-label': 'Toggle town and semantic point views' } });
+    this.updateModeButton();
+    this.modeButton.onclick = async () => {
+      this.mode = this.mode === 'town' ? 'points' : 'town';
+      this.plugin.settings.defaultPresentation = this.mode;
+      await this.plugin.saveSettings();
+      this.updateModeButton();
+      this.fit();
+    };
     const fitButton = toolbar.createEl('button', { attr: { 'aria-label': 'Fit map' } });
     setIcon(fitButton, 'scan');
     fitButton.onclick = () => this.fit();
@@ -423,6 +583,16 @@ class AtlasView extends ItemView {
     this.refresh();
   }
   async onClose() { this.resizeObserver?.disconnect(); }
+  updateModeButton() {
+    if (!this.modeButton) return;
+    this.modeButton.empty();
+    setIcon(this.modeButton, this.mode === 'town' ? 'scatter-chart' : 'house');
+    this.modeButton.setAttribute('aria-label', this.mode === 'town' ? 'Show semantic points' : 'Show hamlet view');
+  }
+  activePoints() {
+    const layout = this.plugin.layout;
+    return this.mode === 'town' && layout?.townPoints?.length === layout?.records?.length ? layout.townPoints : layout?.points || [];
+  }
   refresh() {
     const count = this.plugin.layout?.records?.length || 0;
     this.statusEl.setText(this.plugin.status || (count ? `${count} notes · local semantic plane` : 'Index not built'));
@@ -441,7 +611,8 @@ class AtlasView extends ItemView {
   fit() {
     const layout = this.plugin.layout;
     if (!layout?.points?.length || !this.canvas) { this.draw(); return; }
-    const xs = layout.points.map((p) => p.x), ys = layout.points.map((p) => p.y);
+    const points = this.activePoints();
+    const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
     const width = this.canvas.clientWidth || 1, height = this.canvas.clientHeight || 1;
     this.camera.x = (minX + maxX) / 2;
@@ -483,10 +654,12 @@ class AtlasView extends ItemView {
       const rect = this.canvas.getBoundingClientRect();
       const point = this.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
       let nearest = -1, nearestDistance = 10 / this.camera.zoom;
-      for (let i = 0; i < (this.plugin.layout?.points?.length || 0); i++) {
-        const candidate = this.plugin.layout.points[i];
+      const points = this.activePoints();
+      for (let i = 0; i < points.length; i++) {
+        const candidate = points[i];
         const distance = Math.hypot(candidate.x - point.x, candidate.y - point.y);
-        if (distance < nearestDistance) { nearest = i; nearestDistance = distance; }
+        const hitRadius = this.mode === 'town' ? this.plugin.layout?.profiles?.[i]?.lotRadius || nearestDistance : nearestDistance;
+        if (distance < hitRadius && (nearest < 0 || distance < nearestDistance)) { nearest = i; nearestDistance = distance; }
       }
       this.hovered = nearest;
       if (nearest >= 0) {
@@ -494,7 +667,8 @@ class AtlasView extends ItemView {
         const region = layout.communities?.region?.[nearest];
         const neighborhood = layout.communities?.neighborhood?.[nearest];
         const regionLabel = region >= 0 ? layout.labels?.[region]?.label || `Region ${region + 1}` : null;
-        this.tip.setText(`${layout.records[nearest].name}${region >= 0 ? ` · ${regionLabel} · Neighborhood ${neighborhood + 1}` : ' · Semantic outlier'}`);
+        const profile = layout.profiles?.[nearest];
+        this.tip.setText(`${layout.records[nearest].name}${region >= 0 ? ` · ${regionLabel} · Neighborhood ${neighborhood + 1}` : ' · Semantic outlier'}${this.mode === 'town' && profile ? ` · ${profile.character}` : ''}`);
         this.tip.style.left = `${event.clientX - rect.left + 12}px`;
         this.tip.style.top = `${event.clientY - rect.top + 12}px`;
         this.tip.show();
@@ -511,6 +685,81 @@ class AtlasView extends ItemView {
     });
     this.canvas.addEventListener('pointerleave', () => { this.drag = null; this.hovered = -1; this.tip.hide(); this.draw(); });
   }
+  roadCurve(road, points) {
+    const a = this.worldToScreen(points[road.a]), b = this.worldToScreen(points[road.b]);
+    const dx = b.x - a.x, dy = b.y - a.y, distance = Math.hypot(dx, dy) || 1;
+    const random = mulberry32(hashString(`${road.a}:${road.b}`));
+    const bend = (random() - 0.5) * Math.min(30, distance * 0.16);
+    return { a, b, c: { x: (a.x + b.x) / 2 - dy / distance * bend, y: (a.y + b.y) / 2 + dx / distance * bend } };
+  }
+  drawRoads(ctx, layout, points) {
+    const roads = layout.roads || [];
+    const widths = { lane: 2.2, village: 3.8, regional: 5.4 };
+    for (const pass of ['edge', 'surface']) {
+      for (const road of roads) {
+        const curve = this.roadCurve(road, points);
+        const base = (widths[road.kind] || 2) + road.importance * 1.15;
+        ctx.beginPath(); ctx.moveTo(curve.a.x, curve.a.y); ctx.quadraticCurveTo(curve.c.x, curve.c.y, curve.b.x, curve.b.y);
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.lineWidth = pass === 'edge' ? base + 1.8 : base;
+        ctx.strokeStyle = pass === 'edge' ? '#6f6552' : road.kind === 'regional' ? '#d7c39b' : '#e1d2ae';
+        ctx.globalAlpha = pass === 'edge' ? 0.78 : 0.96;
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+  drawLot(ctx, layout, points, index) {
+    const point = points[index], profile = layout.profiles[index], record = layout.records[index];
+    const polygon = lotPolygon(point, profile, record.path);
+    const screenPolygon = polygon.map((vertex) => this.worldToScreen(vertex));
+    ctx.beginPath(); ctx.moveTo(screenPolygon[0].x, screenPolygon[0].y);
+    for (let i = 1; i < screenPolygon.length; i++) ctx.lineTo(screenPolygon[i].x, screenPolygon[i].y);
+    ctx.closePath();
+    const region = layout.communities.region[index];
+    ctx.fillStyle = profile.character === 'farmstead' ? '#cbd1a9' : regionColor(Math.max(0, region), 0, 0.12);
+    ctx.globalAlpha = profile.character === 'farmstead' ? 0.58 : 0.5;
+    ctx.fill();
+    ctx.strokeStyle = '#786f5a'; ctx.globalAlpha = 0.62; ctx.lineWidth = index === this.hovered ? 1.7 : 0.75; ctx.stroke();
+    if (profile.rurality > 0.42) {
+      ctx.save();
+      ctx.clip();
+      const bounds = screenPolygon.reduce((box, vertex) => ({ minX: Math.min(box.minX, vertex.x), maxX: Math.max(box.maxX, vertex.x), minY: Math.min(box.minY, vertex.y), maxY: Math.max(box.maxY, vertex.y) }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+      ctx.strokeStyle = '#8b876a'; ctx.globalAlpha = 0.34; ctx.lineWidth = 0.65;
+      const spacing = 5 + (1 - profile.topicBreadth) * 3;
+      for (let offset = bounds.minX - (bounds.maxY - bounds.minY); offset < bounds.maxX + (bounds.maxY - bounds.minY); offset += spacing) {
+        ctx.beginPath(); ctx.moveTo(offset, bounds.maxY); ctx.lineTo(offset + (bounds.maxY - bounds.minY) * 0.55, bounds.minY); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    const connected = (layout.roads || []).filter((road) => road.a === index || road.b === index);
+    let angle;
+    if (connected.length) {
+      const priority = { regional: 3, village: 2, lane: 1 };
+      const road = connected.sort((a, b) => priority[b.kind] - priority[a.kind])[0];
+      const other = points[road.a === index ? road.b : road.a];
+      angle = Math.atan2(other.y - point.y, other.x - point.x);
+    } else angle = mulberry32(hashString(record.path))() * Math.PI;
+    const center = this.worldToScreen(point);
+    const scale = Math.max(0.45, this.camera.zoom);
+    const width = (5.2 + profile.buildingScale * 4.8) * scale;
+    const height = (3.6 + profile.buildingScale * 2.8) * scale;
+    ctx.save(); ctx.translate(center.x, center.y); ctx.rotate(angle);
+    ctx.fillStyle = '#d9c9a5'; ctx.strokeStyle = '#4f493d'; ctx.globalAlpha = 1; ctx.lineWidth = 1;
+    ctx.fillRect(-width / 2, -height / 2, width, height); ctx.strokeRect(-width / 2, -height / 2, width, height);
+    ctx.fillStyle = profile.character === 'farmstead' ? '#9b674c' : '#a87557';
+    ctx.beginPath(); ctx.moveTo(-width / 2 - 1, -height / 2); ctx.lineTo(0, -height / 2 - Math.max(2, height * 0.28)); ctx.lineTo(width / 2 + 1, -height / 2); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -height / 2 - Math.max(2, height * 0.28)); ctx.lineTo(0, height / 2); ctx.stroke();
+    if (profile.topicBreadth > 0.62 || profile.sectionComplexity > 0.7) {
+      const annexWidth = width * 0.42, annexHeight = height * 0.52;
+      ctx.fillStyle = '#ccb991'; ctx.fillRect(width * 0.28, height * 0.18, annexWidth, annexHeight); ctx.strokeRect(width * 0.28, height * 0.18, annexWidth, annexHeight);
+    }
+    if (profile.character === 'farmstead' && profile.topicBreadth > 0.38) {
+      ctx.fillStyle = '#b68a66'; ctx.fillRect(-width * 0.75, height * 0.82, width * 0.34, height * 0.3); ctx.strokeRect(-width * 0.75, height * 0.82, width * 0.34, height * 0.3);
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
   draw() {
     if (!this.ctx || !this.canvas) return;
     const ctx = this.ctx, ratio = this.ratio || 1;
@@ -518,13 +767,15 @@ class AtlasView extends ItemView {
     ctx.clearRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
     const layout = this.plugin.layout;
     if (!layout?.points?.length) return;
+    if (this.mode === 'town') { ctx.fillStyle = '#e9e2d1'; ctx.fillRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight); }
+    const points = this.activePoints();
     const style = getComputedStyle(this.contentEl);
     const muted = style.getPropertyValue('--text-muted').trim() || '#888';
     const accent = style.getPropertyValue('--interactive-accent').trim() || '#7c6ee6';
     if (this.plugin.settings.showRegions && layout.communities?.region) {
       const regionIds = [...new Set(layout.communities.region)].filter((region) => region >= 0);
       for (const regionId of regionIds) {
-        const members = layout.points.filter((_, index) => layout.communities.region[index] === regionId);
+        const members = points.filter((_, index) => layout.communities.region[index] === regionId);
         if (members.length < 3) continue;
         const hull = paddedHull(members, 22).map((point) => this.worldToScreen(point));
         ctx.beginPath();
@@ -538,18 +789,20 @@ class AtlasView extends ItemView {
         ctx.stroke();
       }
     }
-    if (this.plugin.settings.showConnections) {
+    if (this.mode === 'town' && this.plugin.settings.showRoads) this.drawRoads(ctx, layout, points);
+    if (this.mode !== 'town' && this.plugin.settings.showConnections) {
       ctx.strokeStyle = muted;
       ctx.globalAlpha = 0.16;
       ctx.lineWidth = 0.8;
       for (const edge of layout.edges) {
-        const a = this.worldToScreen(layout.points[edge.a]), b = this.worldToScreen(layout.points[edge.b]);
+        const a = this.worldToScreen(points[edge.a]), b = this.worldToScreen(points[edge.b]);
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
     }
     ctx.globalAlpha = 1;
-    for (let i = 0; i < layout.points.length; i++) {
-      const point = this.worldToScreen(layout.points[i]);
+    for (let i = 0; i < points.length; i++) {
+      if (this.mode === 'town' && layout.profiles?.[i]) { this.drawLot(ctx, layout, points, i); continue; }
+      const point = this.worldToScreen(points[i]);
       const hovered = i === this.hovered;
       ctx.beginPath();
       ctx.arc(point.x, point.y, hovered ? 6 : 4, 0, Math.PI * 2);
@@ -567,7 +820,7 @@ class AtlasView extends ItemView {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       for (let region = 0; region < layout.communities.regionCount; region++) {
-        const members = layout.points.filter((_, index) => layout.communities.region[index] === region);
+        const members = points.filter((_, index) => layout.communities.region[index] === region);
         if (!members.length) continue;
         const center = members.reduce((sum, point) => ({ x: sum.x + point.x / members.length, y: sum.y + point.y / members.length }), { x: 0, y: 0 });
         const screen = this.worldToScreen(center);
@@ -620,6 +873,9 @@ class AtlasSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('Show semantic connections').addToggle((toggle) => toggle
       .setValue(this.plugin.settings.showConnections)
       .onChange(async (value) => { this.plugin.settings.showConnections = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
+    new Setting(containerEl).setName('Show semantic roads').setDesc('Roads are a sparse hierarchy of genuine semantic graph relationships.').addToggle((toggle) => toggle
+      .setValue(this.plugin.settings.showRoads)
+      .onChange(async (value) => { this.plugin.settings.showRoads = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
     new Setting(containerEl).setName('Show semantic regions').setDesc('Draw subtle boundaries around broad graph communities.').addToggle((toggle) => toggle
       .setValue(this.plugin.settings.showRegions)
       .onChange(async (value) => { this.plugin.settings.showRegions = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
@@ -698,7 +954,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
     try {
       if (!fs.existsSync(this.indexPath)) { this.status = 'Index not built'; return; }
       const parsed = JSON.parse(await fs.promises.readFile(this.indexPath, 'utf8'));
-      if (parsed.version !== 3 || !Array.isArray(parsed.records) || !Array.isArray(parsed.points)) throw new Error('Unsupported cache');
+      if (parsed.version !== 4 || !Array.isArray(parsed.records) || !Array.isArray(parsed.points)) throw new Error('Unsupported cache');
       this.layout = parsed;
       this.status = `${parsed.records.length} notes · cached local atlas`;
       this.progress = null;
@@ -742,23 +998,25 @@ module.exports = class GibAtlasPlugin extends Plugin {
       files.sort((a, b) => a.path.localeCompare(b.path));
       if (files.length < 3) throw new Error(`Only ${files.length} notes found in “${prefix || '/'}”.`);
       const previous = this.layout?.records || [];
-      const cached = new Map(previous.filter((record) => Array.isArray(record.vector) && Array.isArray(record.chunkVectors) && Array.isArray(record.chunks)).map((record) => [record.path, record]));
+      const cached = new Map(previous.filter((record) => Array.isArray(record.vector) && Array.isArray(record.chunkVectors) && Array.isArray(record.chunks) && record.stats).map((record) => [record.path, record]));
       const extractor = await this.prepareModel();
       const records = [];
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         this.setStatus(`Indexing ${i + 1} of ${files.length} · ${file.basename}`, (i + 1) / files.length);
         const old = cached.get(file.path);
-        let vector, chunkVectors, chunks;
-        if (old?.mtime === file.stat.mtime) { vector = old.vector; chunkVectors = old.chunkVectors; chunks = old.chunks; }
+        let vector, chunkVectors, chunks, stats;
+        if (old?.mtime === file.stat.mtime) { vector = old.vector; chunkVectors = old.chunkVectors; chunks = old.chunks; stats = old.stats; }
         else {
-          chunks = documentChunks(file, await this.app.vault.cachedRead(file));
+          const source = await this.app.vault.cachedRead(file);
+          chunks = documentChunks(file, source);
+          stats = sourceStats(source);
           const output = await extractor(chunks, { pooling: 'mean', normalize: true, truncation: true, max_length: 512 });
           const values = output.tolist();
           chunkVectors = (Array.isArray(values[0]?.[0]) ? values[0] : values).map((item) => Array.from(item));
           vector = meanVector(chunkVectors);
         }
-        records.push({ path: file.path, name: file.basename, mtime: file.stat.mtime, vector, chunkVectors, chunks });
+        records.push({ path: file.path, name: file.basename, mtime: file.stat.mtime, vector, chunkVectors, chunks, stats });
         if (i % 2 === 1) await new Promise((resolve) => requestAnimationFrame(resolve));
       }
       this.setStatus('Calculating semantic plane…');
@@ -781,9 +1039,12 @@ module.exports = class GibAtlasPlugin extends Plugin {
       const indexedRecords = records.map((_, index) => [index]);
       const points = relaxCollisions(normalizeLayout(umap.fit(indexedRecords)), this.settings.collisionSpacing);
       const edges = graphData.edges;
-      this.layout = { version: 3, model: MODEL_ID, createdAt: Date.now(), records, points, edges, communities, labels };
+      const profiles = buildPropertyProfiles(records, graphData, communities);
+      const townPoints = relaxPropertyCollisions(points, profiles);
+      const roads = buildRoadNetwork(edges, communities, profiles);
+      this.layout = { version: 4, model: MODEL_ID, createdAt: Date.now(), records, points, townPoints, edges, roads, profiles, communities, labels };
       await fs.promises.writeFile(this.indexPath, JSON.stringify(this.layout));
-      this.status = `${records.length} notes · ${communities.regionCount} regions · ${communities.neighborhoodCount} neighborhoods`;
+      this.status = `${records.length} properties · ${communities.regionCount} districts · ${roads.length} semantic roads`;
       this.progress = null;
       this.refreshViews();
       new Notice(`Gib Atlas mapped ${records.length} notes.`);
