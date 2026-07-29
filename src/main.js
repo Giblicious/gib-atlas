@@ -4,17 +4,23 @@ const path = require('path');
 const zlib = require('zlib');
 const { pipeline, env } = require('@huggingface/transformers');
 const { UMAP } = require('umap-js');
+const Graph = require('graphology');
+const louvain = require('graphology-communities-louvain');
 
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const VIEW_TYPE = 'gib-atlas-view';
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const DEFAULT_SETTINGS = {
+  settingsVersion: 2,
   folder: 'Atlas Demo',
-  neighbors: 6,
-  compactness: 0.18,
-  collisionSpacing: 18,
-  showConnections: true
+  neighbors: 8,
+  compactness: 0.12,
+  collisionSpacing: 10,
+  commonSignalRemoval: 0.3,
+  neighborhoodDetail: 1.35,
+  showConnections: true,
+  showRegions: true
 };
 
 function cachePath(root, request) {
@@ -49,8 +55,8 @@ class FileModelCache {
   }
 }
 
-function cleanDocument(file, source) {
-  const body = source
+function cleanText(source) {
+  return source
     .replace(/^---\s*[\s\S]*?\n---\s*/m, '')
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/!\[\[[^\]]+\]\]/g, ' ')
@@ -58,15 +64,96 @@ function cleanDocument(file, source) {
     .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
     .replace(/^\s{0,3}(?:#{1,6}|>|[-*+] |\d+[.)] )\s*/gm, '')
     .replace(/[*_~`|]/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
-  return `${file.basename}. ${body}`.slice(0, 12000);
+}
+
+function documentChunks(file, source) {
+  const body = cleanText(source);
+  const title = /^\d{4}-\d{2}-\d{2}$/.test(file.basename) ? '' : `${file.basename}. `;
+  const pieces = body.split(/\n\n+/).flatMap((paragraph) => {
+    if (paragraph.length <= 1500) return [paragraph];
+    const sentences = paragraph.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [paragraph];
+    const groups = [];
+    let current = '';
+    for (const sentence of sentences) {
+      if (current && current.length + sentence.length > 1400) { groups.push(current.trim()); current = ''; }
+      current += `${sentence.trim()} `;
+    }
+    if (current.trim()) groups.push(current.trim());
+    return groups;
+  }).filter(Boolean);
+  const chunks = [];
+  let current = '';
+  for (const piece of pieces) {
+    if (current && current.length + piece.length > 1500) { chunks.push(current.trim()); current = ''; }
+    current += `${piece} `;
+  }
+  if (current.trim()) chunks.push(current.trim());
+  if (!chunks.length) chunks.push(file.basename);
+  if (chunks.length > 6) {
+    const sampled = [];
+    for (let i = 0; i < 6; i++) sampled.push(chunks[Math.round(i * (chunks.length - 1) / 5)]);
+    return sampled.map((chunk) => `${title}${chunk}`.slice(0, 1800));
+  }
+  return chunks.map((chunk) => `${title}${chunk}`.slice(0, 1800));
 }
 
 function dot(a, b) {
   let total = 0;
   for (let i = 0; i < a.length; i++) total += a[i] * b[i];
   return total;
+}
+
+function normalize(vector) {
+  const length = Math.sqrt(dot(vector, vector)) || 1;
+  return vector.map((value) => value / length);
+}
+
+function meanVector(vectors) {
+  const output = Array(vectors[0].length).fill(0);
+  for (const vector of vectors) for (let i = 0; i < output.length; i++) output[i] += vector[i];
+  return normalize(output.map((value) => value / vectors.length));
+}
+
+function removeCommonSignal(vector, common, strength) {
+  const projection = dot(vector, common) * strength;
+  return normalize(vector.map((value, i) => value - common[i] * projection));
+}
+
+function topicMatch(a, b) {
+  const directed = (source, target) => {
+    const matches = source.map((vector) => Math.max(...target.map((other) => dot(vector, other)))).sort((x, y) => y - x);
+    return matches.slice(0, Math.min(2, matches.length)).reduce((sum, value) => sum + value, 0) / Math.min(2, matches.length);
+  };
+  return (directed(a, b) + directed(b, a)) / 2;
+}
+
+function semanticMatrix(records, commonStrength, neighbors) {
+  const common = meanVector(records.map((record) => record.vector));
+  const docs = records.map((record) => removeCommonSignal(record.vector, common, commonStrength));
+  const chunks = records.map((record) => record.chunkVectors.map((vector) => removeCommonSignal(vector, common, commonStrength * 0.7)));
+  const matrix = records.map(() => Array(records.length).fill(1));
+  for (let i = 0; i < records.length; i++) {
+    for (let j = i + 1; j < records.length; j++) {
+      matrix[i][j] = dot(docs[i], docs[j]);
+      matrix[j][i] = matrix[i][j];
+    }
+  }
+  const candidateCount = Math.min(records.length - 1, Math.max(24, neighbors * 3));
+  const candidates = new Set();
+  for (let i = 0; i < records.length; i++) {
+    const nearest = matrix[i].map((score, j) => ({ j, score: i === j ? -Infinity : score })).sort((a, b) => b.score - a.score).slice(0, candidateCount);
+    for (const item of nearest) candidates.add(i < item.j ? `${i}:${item.j}` : `${item.j}:${i}`);
+  }
+  for (const pair of candidates) {
+    const [i, j] = pair.split(':').map(Number);
+    const similarity = Math.max(-1, Math.min(1, matrix[i][j] * 0.42 + topicMatch(chunks[i], chunks[j]) * 0.58));
+    matrix[i][j] = similarity;
+    matrix[j][i] = similarity;
+  }
+  return matrix;
 }
 
 function mulberry32(seed) {
@@ -88,19 +175,69 @@ function hashFiles(records) {
   return hash >>> 0;
 }
 
-function mutualEdges(vectors, k) {
-  const nearest = vectors.map((vector, i) => vectors
-    .map((other, j) => ({ j, score: i === j ? -Infinity : dot(vector, other) }))
+function adaptiveGraph(similarities, k) {
+  const nearest = similarities.map((row, i) => row
+    .map((score, j) => ({ j, score: i === j ? -Infinity : score }))
     .sort((a, b) => b.score - a.score)
-    .slice(0, Math.min(k, vectors.length - 1)));
+    .slice(0, Math.min(k, similarities.length - 1)));
   const sets = nearest.map((items) => new Set(items.map((item) => item.j)));
   const edges = [];
   for (let i = 0; i < nearest.length; i++) {
     for (const item of nearest[i]) {
-      if (item.j > i && sets[item.j].has(i)) edges.push({ a: i, b: item.j, weight: item.score });
+      if (item.j > i && sets[item.j].has(i)) {
+        const localFloor = Math.min(nearest[i].at(-1)?.score ?? item.score, nearest[item.j].at(-1)?.score ?? item.score);
+        edges.push({ a: i, b: item.j, similarity: item.score, weight: Math.max(0.02, item.score - localFloor + 0.08) });
+      }
     }
   }
-  return edges;
+  return { edges, nearest };
+}
+
+function stableCommunities(similarities, graphData, detail, seed) {
+  const graph = new Graph({ type: 'undirected' });
+  for (let i = 0; i < similarities.length; i++) graph.addNode(String(i));
+  for (const edge of graphData.edges) graph.addUndirectedEdge(String(edge.a), String(edge.b), { weight: edge.weight });
+  const broadRaw = louvain(graph, { resolution: 0.62, rng: mulberry32(seed), getEdgeWeight: 'weight' });
+  const normalizeIds = (values) => {
+    const groups = new Map();
+    values.forEach((value, index) => { if (!groups.has(value)) groups.set(value, []); groups.get(value).push(index); });
+    return [...groups.values()].sort((a, b) => b.length - a.length || a[0] - b[0]);
+  };
+  const broadGroups = normalizeIds(Object.keys(broadRaw).sort((a, b) => Number(a) - Number(b)).map((key) => broadRaw[key])).filter((members) => members.length >= 3);
+  const region = Array(similarities.length).fill(-1);
+  const neighborhood = Array(similarities.length).fill(-1);
+  let neighborhoodId = 0;
+  broadGroups.forEach((members, regionId) => {
+    members.forEach((index) => { region[index] = regionId; });
+    if (members.length < 6) {
+      members.forEach((index) => { neighborhood[index] = neighborhoodId; });
+      neighborhoodId++;
+      return;
+    }
+    const subgraph = graph.copy();
+    for (const node of subgraph.nodes()) if (!members.includes(Number(node))) subgraph.dropNode(node);
+    const subRaw = louvain(subgraph, { resolution: detail, rng: mulberry32(seed ^ (regionId + 1) * 2654435761), getEdgeWeight: 'weight' });
+    const subGroups = normalizeIds(members.map((index) => subRaw[String(index)]));
+    for (const localMembers of subGroups) {
+      for (const localIndex of localMembers) neighborhood[members[localIndex]] = neighborhoodId;
+      neighborhoodId++;
+    }
+  });
+  const degree = Array(similarities.length).fill(0);
+  graphData.edges.forEach((edge) => { degree[edge.a]++; degree[edge.b]++; });
+  return { region, neighborhood, regionCount: broadGroups.length, neighborhoodCount: neighborhoodId, fringe: degree.map((value, index) => value < 2 || region[index] < 0) };
+}
+
+function hierarchicalDistances(similarities, communities) {
+  return similarities.map((row, i) => row.map((similarity, j) => {
+    if (i === j) return 0;
+    let distance = Math.max(0.015, 1 - similarity);
+    if (communities.neighborhood[i] >= 0 && communities.neighborhood[i] === communities.neighborhood[j]) distance *= 0.72;
+    else if (communities.region[i] >= 0 && communities.region[i] === communities.region[j]) distance *= 0.9;
+    else distance *= 1.18;
+    if (communities.fringe[i] || communities.fringe[j]) distance *= 1.08;
+    return distance;
+  }));
 }
 
 function normalizeLayout(points) {
@@ -136,6 +273,32 @@ function relaxCollisions(points, spacing) {
     }
   }
   return points;
+}
+
+function convexHull(points) {
+  if (points.length <= 2) return points;
+  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower = [];
+  for (const point of sorted) { while (lower.length >= 2 && cross(lower.at(-2), lower.at(-1), point) <= 0) lower.pop(); lower.push(point); }
+  const upper = [];
+  for (const point of sorted.reverse()) { while (upper.length >= 2 && cross(upper.at(-2), upper.at(-1), point) <= 0) upper.pop(); upper.push(point); }
+  lower.pop(); upper.pop();
+  return lower.concat(upper);
+}
+
+function paddedHull(points, padding) {
+  const hull = convexHull(points);
+  const center = hull.reduce((sum, point) => ({ x: sum.x + point.x / hull.length, y: sum.y + point.y / hull.length }), { x: 0, y: 0 });
+  return hull.map((point) => {
+    const dx = point.x - center.x, dy = point.y - center.y, length = Math.hypot(dx, dy) || 1;
+    return { x: point.x + dx / length * padding, y: point.y + dy / length * padding };
+  });
+}
+
+function regionColor(region, neighborhood = 0, alpha = 1) {
+  const hue = (region * 137.508 + neighborhood * 11) % 360;
+  return `hsla(${hue.toFixed(1)}, 58%, 62%, ${alpha})`;
 }
 
 class AtlasView extends ItemView {
@@ -242,7 +405,10 @@ class AtlasView extends ItemView {
       }
       this.hovered = nearest;
       if (nearest >= 0) {
-        this.tip.setText(this.plugin.layout.records[nearest].name);
+        const layout = this.plugin.layout;
+        const region = layout.communities?.region?.[nearest];
+        const neighborhood = layout.communities?.neighborhood?.[nearest];
+        this.tip.setText(`${layout.records[nearest].name}${region >= 0 ? ` · Region ${region + 1} · Neighborhood ${neighborhood + 1}` : ' · Semantic outlier'}`);
         this.tip.style.left = `${event.clientX - rect.left + 12}px`;
         this.tip.style.top = `${event.clientY - rect.top + 12}px`;
         this.tip.show();
@@ -269,6 +435,23 @@ class AtlasView extends ItemView {
     const style = getComputedStyle(this.contentEl);
     const muted = style.getPropertyValue('--text-muted').trim() || '#888';
     const accent = style.getPropertyValue('--interactive-accent').trim() || '#7c6ee6';
+    if (this.plugin.settings.showRegions && layout.communities?.region) {
+      const regionIds = [...new Set(layout.communities.region)].filter((region) => region >= 0);
+      for (const regionId of regionIds) {
+        const members = layout.points.filter((_, index) => layout.communities.region[index] === regionId);
+        if (members.length < 3) continue;
+        const hull = paddedHull(members, 22).map((point) => this.worldToScreen(point));
+        ctx.beginPath();
+        ctx.moveTo(hull[0].x, hull[0].y);
+        for (let i = 1; i < hull.length; i++) ctx.lineTo(hull[i].x, hull[i].y);
+        ctx.closePath();
+        ctx.fillStyle = regionColor(regionId, 0, 0.045);
+        ctx.strokeStyle = regionColor(regionId, 0, 0.3);
+        ctx.lineWidth = 1;
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
     if (this.plugin.settings.showConnections) {
       ctx.strokeStyle = muted;
       ctx.globalAlpha = 0.16;
@@ -284,7 +467,9 @@ class AtlasView extends ItemView {
       const hovered = i === this.hovered;
       ctx.beginPath();
       ctx.arc(point.x, point.y, hovered ? 6 : 4, 0, Math.PI * 2);
-      ctx.fillStyle = hovered ? accent : muted;
+      const region = layout.communities?.region?.[i];
+      const neighborhood = layout.communities?.neighborhood?.[i] ?? 0;
+      ctx.fillStyle = hovered ? accent : (region >= 0 ? regionColor(region, neighborhood) : muted);
       ctx.globalAlpha = hovered ? 1 : 0.82;
       ctx.fill();
       if (hovered) {
@@ -301,7 +486,7 @@ class AtlasSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl('h2', { text: 'Gib Atlas' });
-    containerEl.createEl('p', { text: 'A small semantic-plane experiment. Rebuild after changing layout settings.' });
+    containerEl.createEl('p', { text: 'A multiscale semantic plane. Rebuild after changing analysis or layout settings.' });
     const statusCard = containerEl.createDiv({ cls: 'gib-atlas-index-status' });
     const statusHeader = statusCard.createDiv({ cls: 'gib-atlas-index-status-header' });
     statusHeader.createEl('strong', { text: 'Indexer status' });
@@ -318,12 +503,21 @@ class AtlasSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('Cluster compactness').setDesc('Lower values make close semantic neighborhoods tighter.').addSlider((slider) => slider
       .setLimits(0.05, 0.8, 0.05).setValue(this.plugin.settings.compactness).setDynamicTooltip()
       .onChange(async (value) => { this.plugin.settings.compactness = value; await this.plugin.saveSettings(); }));
+    new Setting(containerEl).setName('Common-signal removal').setDesc('Reduces themes shared by the entire collection so local distinctions remain visible.').addSlider((slider) => slider
+      .setLimits(0, 0.6, 0.05).setValue(this.plugin.settings.commonSignalRemoval).setDynamicTooltip()
+      .onChange(async (value) => { this.plugin.settings.commonSignalRemoval = value; await this.plugin.saveSettings(); }));
+    new Setting(containerEl).setName('Neighborhood detail').setDesc('Higher values reveal finer communities inside broad semantic regions.').addSlider((slider) => slider
+      .setLimits(0.8, 2.2, 0.05).setValue(this.plugin.settings.neighborhoodDetail).setDynamicTooltip()
+      .onChange(async (value) => { this.plugin.settings.neighborhoodDetail = value; await this.plugin.saveSettings(); }));
     new Setting(containerEl).setName('Dot spacing').setDesc('Minimum visual separation after semantic placement.').addSlider((slider) => slider
       .setLimits(10, 32, 1).setValue(this.plugin.settings.collisionSpacing).setDynamicTooltip()
       .onChange(async (value) => { this.plugin.settings.collisionSpacing = value; await this.plugin.saveSettings(); }));
     new Setting(containerEl).setName('Show semantic connections').addToggle((toggle) => toggle
       .setValue(this.plugin.settings.showConnections)
       .onChange(async (value) => { this.plugin.settings.showConnections = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
+    new Setting(containerEl).setName('Show semantic regions').setDesc('Draw subtle boundaries around broad graph communities.').addToggle((toggle) => toggle
+      .setValue(this.plugin.settings.showRegions)
+      .onChange(async (value) => { this.plugin.settings.showRegions = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
     new Setting(containerEl).setName('Rebuild semantic plane').setDesc('Re-embed changed notes and recalculate the layout.').addButton((button) => {
       this.plugin.rebuildButton = button;
       button.setButtonText(this.plugin.building ? 'Working…' : 'Rebuild').setCta().setDisabled(Boolean(this.plugin.building)).onClick(() => this.plugin.rebuild());
@@ -347,7 +541,17 @@ module.exports = class GibAtlasPlugin extends Plugin {
     await this.loadIndex();
   }
   onunload() { this.app.workspace.detachLeavesOfType(VIEW_TYPE); }
-  async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
+  async loadSettings() {
+    const saved = await this.loadData() || {};
+    if ((saved.settingsVersion || 1) < 2) {
+      saved.settingsVersion = 2;
+      saved.neighbors = 8;
+      saved.compactness = 0.12;
+      saved.collisionSpacing = 10;
+    }
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+    await this.saveData(this.settings);
+  }
   async saveSettings() { await this.saveData(this.settings); }
   async activateView() {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
@@ -386,7 +590,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
     try {
       if (!fs.existsSync(this.indexPath)) { this.status = 'Index not built'; return; }
       const parsed = JSON.parse(await fs.promises.readFile(this.indexPath, 'utf8'));
-      if (parsed.version !== 1 || !Array.isArray(parsed.records) || !Array.isArray(parsed.points)) throw new Error('Unsupported cache');
+      if (parsed.version !== 2 || !Array.isArray(parsed.records) || !Array.isArray(parsed.points)) throw new Error('Unsupported cache');
       this.layout = parsed;
       this.status = `${parsed.records.length} notes · cached local atlas`;
       this.progress = null;
@@ -430,39 +634,46 @@ module.exports = class GibAtlasPlugin extends Plugin {
       files.sort((a, b) => a.path.localeCompare(b.path));
       if (files.length < 3) throw new Error(`Only ${files.length} notes found in “${prefix || '/'}”.`);
       const previous = this.layout?.records || [];
-      const cached = new Map(previous.filter((record) => Array.isArray(record.vector)).map((record) => [record.path, record]));
+      const cached = new Map(previous.filter((record) => Array.isArray(record.vector) && Array.isArray(record.chunkVectors)).map((record) => [record.path, record]));
       const extractor = await this.prepareModel();
       const records = [];
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         this.setStatus(`Indexing ${i + 1} of ${files.length} · ${file.basename}`, (i + 1) / files.length);
         const old = cached.get(file.path);
-        let vector;
-        if (old?.mtime === file.stat.mtime) vector = old.vector;
+        let vector, chunkVectors;
+        if (old?.mtime === file.stat.mtime) { vector = old.vector; chunkVectors = old.chunkVectors; }
         else {
-          const text = cleanDocument(file, await this.app.vault.cachedRead(file));
-          const output = await extractor(text, { pooling: 'mean', normalize: true, truncation: true, max_length: 512 });
-          vector = Array.from(output.data);
+          const chunks = documentChunks(file, await this.app.vault.cachedRead(file));
+          const output = await extractor(chunks, { pooling: 'mean', normalize: true, truncation: true, max_length: 512 });
+          const values = output.tolist();
+          chunkVectors = (Array.isArray(values[0]?.[0]) ? values[0] : values).map((item) => Array.from(item));
+          vector = meanVector(chunkVectors);
         }
-        records.push({ path: file.path, name: file.basename, mtime: file.stat.mtime, vector });
+        records.push({ path: file.path, name: file.basename, mtime: file.stat.mtime, vector, chunkVectors });
         if (i % 2 === 1) await new Promise((resolve) => requestAnimationFrame(resolve));
       }
       this.setStatus('Calculating semantic plane…');
-      const vectors = records.map((record) => record.vector);
-      const random = mulberry32(hashFiles(records));
+      const seed = hashFiles(records);
+      const similarities = semanticMatrix(records, this.settings.commonSignalRemoval, this.settings.neighbors);
+      const graphData = adaptiveGraph(similarities, this.settings.neighbors);
+      const communities = stableCommunities(similarities, graphData, this.settings.neighborhoodDetail, seed);
+      const distances = hierarchicalDistances(similarities, communities);
+      const random = mulberry32(seed);
       const umap = new UMAP({
         nComponents: 2,
         nNeighbors: Math.min(this.settings.neighbors, records.length - 1),
         minDist: this.settings.compactness,
         spread: 1,
         random,
-        distanceFn: (a, b) => 1 - dot(a, b)
+        distanceFn: (a, b) => distances[a[0]][b[0]]
       });
-      const points = relaxCollisions(normalizeLayout(umap.fit(vectors)), this.settings.collisionSpacing);
-      const edges = mutualEdges(vectors, this.settings.neighbors);
-      this.layout = { version: 1, model: MODEL_ID, createdAt: Date.now(), records, points, edges };
+      const indexedRecords = records.map((_, index) => [index]);
+      const points = relaxCollisions(normalizeLayout(umap.fit(indexedRecords)), this.settings.collisionSpacing);
+      const edges = graphData.edges;
+      this.layout = { version: 2, model: MODEL_ID, createdAt: Date.now(), records, points, edges, communities };
       await fs.promises.writeFile(this.indexPath, JSON.stringify(this.layout));
-      this.status = `${records.length} notes · local semantic plane`;
+      this.status = `${records.length} notes · ${communities.regionCount} regions · ${communities.neighborhoodCount} neighborhoods`;
       this.progress = null;
       this.refreshViews();
       new Notice(`Gib Atlas mapped ${records.length} notes.`);

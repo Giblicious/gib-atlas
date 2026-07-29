@@ -4,9 +4,12 @@ Gib Atlas is an experimental, fully local semantic map for Obsidian. Version 0.1
 
 ## Current grammar
 
-- One BGE Small English v1.5 embedding per note
-- Deterministic UMAP projection using cosine distance
-- Mutual nearest-neighbor lines
+- Several BGE Small English v1.5 topic vectors per note
+- Modest removal of corpus-common semantic signal
+- Adaptive mutual-neighbor graph
+- Broad Louvain regions with finer nested neighborhoods
+- Deterministic hierarchy-aware UMAP projection
+- Mutual nearest-neighbor lines and subtle region boundaries
 - Collision-only relaxation anchored to the semantic projection
 - Pan, zoom, hover, and click-to-open
 

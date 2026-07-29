@@ -1,6 +1,6 @@
 {
   "name": "gib-atlas",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,8 @@
   "devDependencies": {
     "@huggingface/transformers": "^3.8.1",
     "esbuild": "^0.25.12",
+    "graphology": "^0.26.0",
+    "graphology-communities-louvain": "^2.0.2",
     "umap-js": "^1.4.0"
   },
   "overrides": {
