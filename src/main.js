@@ -20,7 +20,8 @@ const DEFAULT_SETTINGS = {
   commonSignalRemoval: 0.3,
   neighborhoodDetail: 1.35,
   showConnections: true,
-  showRegions: true
+  showRegions: true,
+  showRegionLabels: true
 };
 
 function cachePath(root, request) {
@@ -301,6 +302,90 @@ function regionColor(region, neighborhood = 0, alpha = 1) {
   return `hsla(${hue.toFixed(1)}, 58%, 62%, ${alpha})`;
 }
 
+const LABEL_STOP_WORDS = new Set(`a all an and are as at be been being but by can could did do does for from had has have he her hers him his how i if in into is it its may me might more most my no not of on one or our ours she should so than that the their theirs them then there these they this those through to too up us very was we were what when where which who why will with would you your yours`.split(' '));
+const LABEL_NOISE_WORDS = new Set(`assistant chatgpt claude conversation entry entries journal note notes response said says saying asked question questions today yesterday tomorrow year years thing things something anything really just maybe perhaps also well much many get got make made look looks like think thinks thinking thought thoughts feel felt feeling feelings know knew want wanted temp pdf bummer file files`.split(' '));
+
+function phraseTokens(text) {
+  return (text.toLocaleLowerCase().match(/[\p{L}][\p{L}'’-]*/gu) || [])
+    .map((token) => token.replace(/[’']/g, "'").replace(/^[-']+|[-']+$/g, ''))
+    .filter((token) => token.length > 1);
+}
+
+function documentPhrases(chunks) {
+  const phrases = new Set();
+  for (const chunk of chunks) {
+    for (const sentence of chunk.split(/[.!?;:\n]+/)) {
+      const tokens = phraseTokens(sentence);
+      for (let start = 0; start < tokens.length; start++) {
+        for (let length = 1; length <= 4 && start + length <= tokens.length; length++) {
+          const selection = tokens.slice(start, start + length);
+          if (LABEL_STOP_WORDS.has(selection[0]) || LABEL_STOP_WORDS.has(selection.at(-1))) continue;
+          if (selection.every((token) => LABEL_STOP_WORDS.has(token) || LABEL_NOISE_WORDS.has(token))) continue;
+          if (selection.some((token) => LABEL_NOISE_WORDS.has(token)) || new Set(selection).size !== selection.length) continue;
+          const phrase = selection.join(' ');
+          if (phrase.length <= 46) phrases.add(phrase);
+        }
+      }
+    }
+  }
+  return phrases;
+}
+
+function labelCandidates(records, members, limit = 32) {
+  const memberSet = new Set(members);
+  const inside = new Map(), outside = new Map();
+  records.forEach((record, index) => {
+    for (const phrase of documentPhrases(record.chunks || [])) {
+      const target = memberSet.has(index) ? inside : outside;
+      target.set(phrase, (target.get(phrase) || 0) + 1);
+    }
+  });
+  const outsideSize = Math.max(1, records.length - members.length);
+  const minimumSupport = members.length >= 6 ? 2 : 1;
+  const direct = [...inside.entries()].filter(([, count]) => count >= minimumSupport).map(([phrase, count]) => {
+    const coverage = count / members.length;
+    const outsideRate = (outside.get(phrase) || 0) / outsideSize;
+    const wordCount = phrase.split(' ').length;
+    const lengthWeight = wordCount === 1 ? 0.78 : wordCount === 2 ? 1.2 : wordCount === 3 ? 1.1 : 0.95;
+    const lexical = (coverage - outsideRate) * Math.log2(count + 1) * lengthWeight;
+    return { phrase, display: phrase, lexical, coverage, kind: 'phrase' };
+  }).filter((candidate) => candidate.lexical > 0).sort((a, b) => b.lexical - a.lexical || a.phrase.localeCompare(b.phrase));
+  return direct.slice(0, limit);
+}
+
+function formatLabel(phrase) {
+  return phrase.split(' ').map((word, index) => index > 0 && LABEL_STOP_WORDS.has(word) ? word : word.charAt(0).toLocaleUpperCase() + word.slice(1)).join(' ');
+}
+
+async function buildRegionLabels(records, communities, extractor) {
+  const regions = Array.from({ length: communities.regionCount }, (_, region) => records.map((_, index) => index).filter((index) => communities.region[index] === region));
+  const centroids = regions.map((members) => meanVector(members.map((index) => records[index].vector)));
+  const candidatesByRegion = regions.map((members) => labelCandidates(records, members));
+  const flat = candidatesByRegion.flatMap((candidates, region) => candidates.map((candidate) => ({ ...candidate, region })));
+  if (!flat.length) return regions.map((_, region) => ({ region, label: `Region ${region + 1}`, confidence: 0, inferred: false }));
+  const output = await extractor(flat.map((candidate) => candidate.phrase), { pooling: 'mean', normalize: true, truncation: true, max_length: 64 });
+  const values = output.tolist();
+  const vectors = (Array.isArray(values[0]?.[0]) ? values[0] : values).map((item) => Array.from(item));
+  const best = Array(communities.regionCount).fill(null);
+  flat.forEach((candidate, index) => {
+    const regionSimilarity = dot(vectors[index], centroids[candidate.region]);
+    const competingSimilarity = Math.max(-1, ...centroids.filter((_, region) => region !== candidate.region).map((centroid) => dot(vectors[index], centroid)));
+    const margin = regionSimilarity - competingSimilarity;
+    const lexical = Math.min(1, candidate.lexical);
+    const words = candidate.phrase.split(' ');
+    const quality = words.length === 2 ? 0.025 : words.length === 3 ? 0.012 : words.length >= 4 ? -0.025 : -0.01;
+    const score = margin * 0.62 + regionSimilarity * 0.13 + lexical * 0.25 + quality;
+    const confidence = Math.max(0, Math.min(1, ((margin - 0.004) / 0.075) * 0.62 + Math.min(1, candidate.coverage / 0.35) * 0.25 + lexical * 0.13 + quality));
+    if (!best[candidate.region] || score > best[candidate.region].score) best[candidate.region] = { ...candidate, score, confidence };
+  });
+  return best.map((phrase, region) => {
+    const candidate = phrase?.confidence >= 0.58 ? phrase : null;
+    return candidate
+      ? { region, label: formatLabel(candidate.display || candidate.phrase), confidence: candidate.confidence, inferred: true }
+      : { region, label: `Region ${region + 1}`, confidence: phrase?.confidence || 0, inferred: false };
+  });
+}
+
 class AtlasView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -408,7 +493,8 @@ class AtlasView extends ItemView {
         const layout = this.plugin.layout;
         const region = layout.communities?.region?.[nearest];
         const neighborhood = layout.communities?.neighborhood?.[nearest];
-        this.tip.setText(`${layout.records[nearest].name}${region >= 0 ? ` · Region ${region + 1} · Neighborhood ${neighborhood + 1}` : ' · Semantic outlier'}`);
+        const regionLabel = region >= 0 ? layout.labels?.[region]?.label || `Region ${region + 1}` : null;
+        this.tip.setText(`${layout.records[nearest].name}${region >= 0 ? ` · ${regionLabel} · Neighborhood ${neighborhood + 1}` : ' · Semantic outlier'}`);
         this.tip.style.left = `${event.clientX - rect.left + 12}px`;
         this.tip.style.top = `${event.clientY - rect.top + 12}px`;
         this.tip.show();
@@ -476,6 +562,25 @@ class AtlasView extends ItemView {
         ctx.strokeStyle = accent; ctx.globalAlpha = 0.28; ctx.lineWidth = 5; ctx.stroke();
       }
     }
+    if (this.plugin.settings.showRegionLabels && layout.communities?.region) {
+      ctx.font = '600 11px var(--font-interface)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (let region = 0; region < layout.communities.regionCount; region++) {
+        const members = layout.points.filter((_, index) => layout.communities.region[index] === region);
+        if (!members.length) continue;
+        const center = members.reduce((sum, point) => ({ x: sum.x + point.x / members.length, y: sum.y + point.y / members.length }), { x: 0, y: 0 });
+        const screen = this.worldToScreen(center);
+        const label = layout.labels?.[region]?.label || `Region ${region + 1}`;
+        const width = ctx.measureText(label).width + 12;
+        ctx.fillStyle = style.getPropertyValue('--background-primary').trim() || '#111';
+        ctx.globalAlpha = 0.82;
+        ctx.fillRect(screen.x - width / 2, screen.y - 10, width, 20);
+        ctx.fillStyle = regionColor(region, 0, 1);
+        ctx.globalAlpha = 0.95;
+        ctx.fillText(label, screen.x, screen.y);
+      }
+    }
     ctx.globalAlpha = 1;
   }
 }
@@ -518,6 +623,9 @@ class AtlasSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('Show semantic regions').setDesc('Draw subtle boundaries around broad graph communities.').addToggle((toggle) => toggle
       .setValue(this.plugin.settings.showRegions)
       .onChange(async (value) => { this.plugin.settings.showRegions = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
+    new Setting(containerEl).setName('Show region labels').setDesc('Use a semantic label only when it is distinctive enough; otherwise show a neutral region number.').addToggle((toggle) => toggle
+      .setValue(this.plugin.settings.showRegionLabels)
+      .onChange(async (value) => { this.plugin.settings.showRegionLabels = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
     new Setting(containerEl).setName('Rebuild semantic plane').setDesc('Re-embed changed notes and recalculate the layout.').addButton((button) => {
       this.plugin.rebuildButton = button;
       button.setButtonText(this.plugin.building ? 'Working…' : 'Rebuild').setCta().setDisabled(Boolean(this.plugin.building)).onClick(() => this.plugin.rebuild());
@@ -590,7 +698,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
     try {
       if (!fs.existsSync(this.indexPath)) { this.status = 'Index not built'; return; }
       const parsed = JSON.parse(await fs.promises.readFile(this.indexPath, 'utf8'));
-      if (parsed.version !== 2 || !Array.isArray(parsed.records) || !Array.isArray(parsed.points)) throw new Error('Unsupported cache');
+      if (parsed.version !== 3 || !Array.isArray(parsed.records) || !Array.isArray(parsed.points)) throw new Error('Unsupported cache');
       this.layout = parsed;
       this.status = `${parsed.records.length} notes · cached local atlas`;
       this.progress = null;
@@ -634,23 +742,23 @@ module.exports = class GibAtlasPlugin extends Plugin {
       files.sort((a, b) => a.path.localeCompare(b.path));
       if (files.length < 3) throw new Error(`Only ${files.length} notes found in “${prefix || '/'}”.`);
       const previous = this.layout?.records || [];
-      const cached = new Map(previous.filter((record) => Array.isArray(record.vector) && Array.isArray(record.chunkVectors)).map((record) => [record.path, record]));
+      const cached = new Map(previous.filter((record) => Array.isArray(record.vector) && Array.isArray(record.chunkVectors) && Array.isArray(record.chunks)).map((record) => [record.path, record]));
       const extractor = await this.prepareModel();
       const records = [];
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         this.setStatus(`Indexing ${i + 1} of ${files.length} · ${file.basename}`, (i + 1) / files.length);
         const old = cached.get(file.path);
-        let vector, chunkVectors;
-        if (old?.mtime === file.stat.mtime) { vector = old.vector; chunkVectors = old.chunkVectors; }
+        let vector, chunkVectors, chunks;
+        if (old?.mtime === file.stat.mtime) { vector = old.vector; chunkVectors = old.chunkVectors; chunks = old.chunks; }
         else {
-          const chunks = documentChunks(file, await this.app.vault.cachedRead(file));
+          chunks = documentChunks(file, await this.app.vault.cachedRead(file));
           const output = await extractor(chunks, { pooling: 'mean', normalize: true, truncation: true, max_length: 512 });
           const values = output.tolist();
           chunkVectors = (Array.isArray(values[0]?.[0]) ? values[0] : values).map((item) => Array.from(item));
           vector = meanVector(chunkVectors);
         }
-        records.push({ path: file.path, name: file.basename, mtime: file.stat.mtime, vector, chunkVectors });
+        records.push({ path: file.path, name: file.basename, mtime: file.stat.mtime, vector, chunkVectors, chunks });
         if (i % 2 === 1) await new Promise((resolve) => requestAnimationFrame(resolve));
       }
       this.setStatus('Calculating semantic plane…');
@@ -658,6 +766,8 @@ module.exports = class GibAtlasPlugin extends Plugin {
       const similarities = semanticMatrix(records, this.settings.commonSignalRemoval, this.settings.neighbors);
       const graphData = adaptiveGraph(similarities, this.settings.neighbors);
       const communities = stableCommunities(similarities, graphData, this.settings.neighborhoodDetail, seed);
+      this.setStatus('Deriving confident region labels…');
+      const labels = await buildRegionLabels(records, communities, extractor);
       const distances = hierarchicalDistances(similarities, communities);
       const random = mulberry32(seed);
       const umap = new UMAP({
@@ -671,7 +781,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
       const indexedRecords = records.map((_, index) => [index]);
       const points = relaxCollisions(normalizeLayout(umap.fit(indexedRecords)), this.settings.collisionSpacing);
       const edges = graphData.edges;
-      this.layout = { version: 2, model: MODEL_ID, createdAt: Date.now(), records, points, edges, communities };
+      this.layout = { version: 3, model: MODEL_ID, createdAt: Date.now(), records, points, edges, communities, labels };
       await fs.promises.writeFile(this.indexPath, JSON.stringify(this.layout));
       this.status = `${records.length} notes · ${communities.regionCount} regions · ${communities.neighborhoodCount} neighborhoods`;
       this.progress = null;
