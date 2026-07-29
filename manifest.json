@@ -1,0 +1,9 @@
+{
+  "id": "gib-atlas",
+  "name": "Gib Atlas",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.5",
+  "description": "An experimental local semantic atlas for Obsidian.",
+  "author": "Giblicious",
+  "isDesktopOnly": true
+}

@@ -1,0 +1,76 @@
+.gib-atlas-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--background-primary);
+}
+
+.gib-atlas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.gib-atlas-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.gib-atlas-mark,
+.gib-atlas-toolbar button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.gib-atlas-status {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gib-atlas-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+}
+
+.gib-atlas-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.gib-atlas-stage:active { cursor: grabbing; }
+
+.gib-atlas-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.gib-atlas-tip {
+  position: absolute;
+  z-index: 2;
+  max-width: 280px;
+  padding: 5px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  box-shadow: var(--shadow-s);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  pointer-events: none;
+}
