@@ -74,3 +74,44 @@
   font-size: var(--font-ui-small);
   pointer-events: none;
 }
+
+.gib-atlas-index-status {
+  margin: 14px 0 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+}
+
+.gib-atlas-index-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.gib-atlas-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-green);
+}
+
+.gib-atlas-status-dot.is-working { background: var(--color-yellow); }
+.gib-atlas-status-dot.is-error { background: var(--color-red); }
+
+.gib-atlas-index-status-text {
+  min-height: 1.4em;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.gib-atlas-progress {
+  display: block;
+  width: 100%;
+  height: 4px;
+  margin-top: 10px;
+  accent-color: var(--interactive-accent);
+}
+
+.gib-atlas-progress.is-hidden { display: none; }

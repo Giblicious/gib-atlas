@@ -302,6 +302,13 @@ class AtlasSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl('h2', { text: 'Gib Atlas' });
     containerEl.createEl('p', { text: 'A small semantic-plane experiment. Rebuild after changing layout settings.' });
+    const statusCard = containerEl.createDiv({ cls: 'gib-atlas-index-status' });
+    const statusHeader = statusCard.createDiv({ cls: 'gib-atlas-index-status-header' });
+    statusHeader.createEl('strong', { text: 'Indexer status' });
+    this.plugin.settingStatusDot = statusHeader.createSpan({ cls: 'gib-atlas-status-dot' });
+    this.plugin.settingStatusEl = statusCard.createDiv({ cls: 'gib-atlas-index-status-text' });
+    this.plugin.settingProgressEl = statusCard.createEl('progress', { cls: 'gib-atlas-progress', attr: { max: '1' } });
+    this.plugin.updateStatusUI();
     new Setting(containerEl).setName('Source folder').setDesc('Only Markdown notes inside this folder are mapped.').addText((text) => text
       .setPlaceholder('Atlas Demo').setValue(this.plugin.settings.folder)
       .onChange(async (value) => { this.plugin.settings.folder = value.trim(); await this.plugin.saveSettings(); }));
@@ -317,8 +324,10 @@ class AtlasSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('Show semantic connections').addToggle((toggle) => toggle
       .setValue(this.plugin.settings.showConnections)
       .onChange(async (value) => { this.plugin.settings.showConnections = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
-    new Setting(containerEl).setName('Rebuild semantic plane').setDesc('Re-embed changed notes and recalculate the layout.').addButton((button) => button
-      .setButtonText('Rebuild').setCta().onClick(() => this.plugin.rebuild()));
+    new Setting(containerEl).setName('Rebuild semantic plane').setDesc('Re-embed changed notes and recalculate the layout.').addButton((button) => {
+      this.plugin.rebuildButton = button;
+      button.setButtonText(this.plugin.building ? 'Working…' : 'Rebuild').setCta().setDisabled(Boolean(this.plugin.building)).onClick(() => this.plugin.rebuild());
+    });
   }
 }
 
@@ -346,7 +355,33 @@ module.exports = class GibAtlasPlugin extends Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
   refreshViews() { for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.refresh?.(); }
-  setStatus(status) { this.status = status; this.refreshViews(); }
+  updateStatusUI() {
+    if (this.settingStatusEl?.isConnected) this.settingStatusEl.setText(this.status || 'Idle');
+    if (this.settingStatusDot?.isConnected) {
+      this.settingStatusDot.toggleClass('is-working', Boolean(this.building));
+      this.settingStatusDot.toggleClass('is-error', Boolean(this.status?.startsWith('Rebuild failed')));
+    }
+    if (this.settingProgressEl?.isConnected) {
+      if (Number.isFinite(this.progress)) {
+        this.settingProgressEl.value = this.progress;
+        this.settingProgressEl.removeAttribute('data-indeterminate');
+      } else {
+        this.settingProgressEl.removeAttribute('value');
+        this.settingProgressEl.setAttribute('data-indeterminate', 'true');
+      }
+      this.settingProgressEl.toggleClass('is-hidden', !this.building && !Number.isFinite(this.progress));
+    }
+    if (this.rebuildButton) {
+      this.rebuildButton.setButtonText(this.building ? 'Working…' : 'Rebuild');
+      this.rebuildButton.setDisabled(Boolean(this.building));
+    }
+  }
+  setStatus(status, progress = null) {
+    this.status = status;
+    this.progress = progress;
+    this.updateStatusUI();
+    this.refreshViews();
+  }
   async loadIndex() {
     try {
       if (!fs.existsSync(this.indexPath)) { this.status = 'Index not built'; return; }
@@ -354,6 +389,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
       if (parsed.version !== 1 || !Array.isArray(parsed.records) || !Array.isArray(parsed.points)) throw new Error('Unsupported cache');
       this.layout = parsed;
       this.status = `${parsed.records.length} notes · cached local atlas`;
+      this.progress = null;
       this.refreshViews();
     } catch (error) {
       console.error('Gib Atlas: failed to load index', error);
@@ -379,7 +415,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
     this.extractor = await pipeline('feature-extraction', MODEL_ID, {
       dtype: 'q8',
       progress_callback: (event) => {
-        if (event.status === 'progress' && Number.isFinite(event.progress)) this.setStatus(`Downloading model · ${Math.round(event.progress)}%`);
+        if (event.status === 'progress' && Number.isFinite(event.progress)) this.setStatus(`Downloading model · ${Math.round(event.progress)}%`, event.progress / 100);
       }
     });
     return this.extractor;
@@ -387,6 +423,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
   async rebuild() {
     if (this.building) { new Notice('Gib Atlas is already rebuilding.'); return; }
     this.building = true;
+    this.updateStatusUI();
     try {
       const prefix = this.settings.folder.replace(/^\/+|\/+$/g, '');
       const files = this.app.vault.getMarkdownFiles().filter((file) => !prefix || file.path === prefix || file.path.startsWith(`${prefix}/`));
@@ -398,7 +435,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
       const records = [];
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        this.setStatus(`Indexing ${i + 1} of ${files.length} · ${file.basename}`);
+        this.setStatus(`Indexing ${i + 1} of ${files.length} · ${file.basename}`, (i + 1) / files.length);
         const old = cached.get(file.path);
         let vector;
         if (old?.mtime === file.stat.mtime) vector = old.vector;
@@ -426,6 +463,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
       this.layout = { version: 1, model: MODEL_ID, createdAt: Date.now(), records, points, edges };
       await fs.promises.writeFile(this.indexPath, JSON.stringify(this.layout));
       this.status = `${records.length} notes · local semantic plane`;
+      this.progress = null;
       this.refreshViews();
       new Notice(`Gib Atlas mapped ${records.length} notes.`);
     } catch (error) {
@@ -434,6 +472,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
       new Notice(`Gib Atlas: ${error.message}`);
     } finally {
       this.building = false;
+      this.updateStatusUI();
     }
   }
 };
