@@ -1,4 +1,4 @@
 node_modules/
-main.js
+/main.js
 *.log
 .DS_Store
