@@ -1,6 +1,6 @@
 # Gib Atlas
 
-Gib Atlas is an experimental, fully local semantic map for Obsidian. Version 0.1 is intentionally small: it turns notes into a stable dot plane so the spatial grammar can be evaluated before lots, buildings, roads, or terrain are introduced.
+Gib Atlas is an experimental, fully local semantic map and procedural-cartography laboratory for Obsidian.
 
 ## Current grammar
 
@@ -25,6 +25,18 @@ The map now establishes ownership topology before adding visual structures:
 - A capacity-controlled power diagram prevents gaps and overlaps
 
 The toolbar switches between this land partition and the underlying semantic point plane.
+
+## Terrain laboratory
+
+Version 0.5 adds an isolated terrain laboratory for developing the atlas's visual language without involving vault data. Open it from the mountain ribbon icon, the command palette, or plugin settings.
+
+- Draw peaks with a tap or click
+- Draw ridges and valleys by dragging
+- Generate deterministic variations with the shuffle control
+- Toggle cartographic contours
+- Undo or restore the demonstration geometry
+
+The renderer uses two browser-native WebGL passes: an editable procedural height field followed by relief shading, cast shadows, rock exposure, contours, grid ink, and surface texture. Interaction renders at a reduced internal resolution and automatically refines after input settles. The same renderer runs on desktop and mobile without a 3D mesh or external service.
 
 The model is downloaded once, then cached locally. Note text and embeddings are not sent to a service.
 

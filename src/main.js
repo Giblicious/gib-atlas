@@ -1,18 +1,19 @@
-const { Plugin, ItemView, PluginSettingTab, Setting, Notice, TFile, setIcon } = require('obsidian');
-const fs = require('fs');
-const path = require('path');
-const zlib = require('zlib');
+const { Plugin, ItemView, PluginSettingTab, Setting, Notice, TFile, setIcon, Platform } = require('obsidian');
+const fs = Platform.isDesktopApp ? require('fs') : null;
+const path = Platform.isDesktopApp ? require('path') : null;
+const zlib = Platform.isDesktopApp ? require('zlib') : null;
 const { pipeline, env } = require('@huggingface/transformers');
 const { UMAP } = require('umap-js');
 const Graph = require('graphology');
 const louvain = require('graphology-communities-louvain');
+const { TERRAIN_VIEW_TYPE, TerrainLabView, DEFAULT_TERRAIN_GEOMETRY } = require('./terrain-lab');
 
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const VIEW_TYPE = 'gib-atlas-view';
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const DEFAULT_SETTINGS = {
-  settingsVersion: 2,
+  settingsVersion: 3,
   folder: 'Atlas Demo',
   neighbors: 8,
   compactness: 0.12,
@@ -22,8 +23,26 @@ const DEFAULT_SETTINGS = {
   showConnections: true,
   showRegions: true,
   showRegionLabels: true,
-  defaultPresentation: 'land'
+  defaultPresentation: 'land',
+  terrainSeed: 37,
+  terrainGeometry: DEFAULT_TERRAIN_GEOMETRY,
+  terrainContours: true
 };
+
+async function inflateEmbeddedBase64(encoded, text = false) {
+  let bytes;
+  if (Platform.isDesktopApp && zlib) {
+    const inflated = zlib.gunzipSync(Buffer.from(encoded, 'base64'));
+    return text ? inflated.toString('utf8') : new Uint8Array(inflated.buffer, inflated.byteOffset, inflated.byteLength);
+  }
+  if (typeof DecompressionStream === 'undefined') throw new Error('This device cannot unpack the bundled local model runtime');
+  const binary = atob(encoded);
+  const compressed = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) compressed[index] = binary.charCodeAt(index);
+  const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const buffer = await new Response(stream).arrayBuffer();
+  return text ? new TextDecoder().decode(buffer) : new Uint8Array(buffer);
+}
 
 function cachePath(root, request) {
   let key = typeof request === 'string' ? request : request?.url || String(request || '');
@@ -936,6 +955,9 @@ class AtlasSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('Show region labels').setDesc('Use a semantic label only when it is distinctive enough; otherwise show a neutral region number.').addToggle((toggle) => toggle
       .setValue(this.plugin.settings.showRegionLabels)
       .onChange(async (value) => { this.plugin.settings.showRegionLabels = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
+    containerEl.createEl('h3', { text: 'Terrain laboratory' });
+    new Setting(containerEl).setName('Open terrain laboratory').setDesc('Sculpt procedural peaks, ridges, and valleys independently from the semantic atlas.').addButton((button) => button
+      .setButtonText('Open').onClick(() => this.plugin.activateTerrainLab()));
     new Setting(containerEl).setName('Rebuild semantic plane').setDesc('Re-embed changed notes and recalculate the layout.').addButton((button) => {
       this.plugin.rebuildButton = button;
       button.setButtonText(this.plugin.building ? 'Working…' : 'Rebuild').setCta().setDisabled(Boolean(this.plugin.building)).onClick(() => this.plugin.rebuild());
@@ -948,25 +970,38 @@ module.exports = class GibAtlasPlugin extends Plugin {
     await this.loadSettings();
     this.layout = null;
     this.status = 'Loading cached atlas…';
-    this.basePath = this.app.vault.adapter.getBasePath();
-    this.pluginPath = path.join(this.basePath, this.app.vault.configDir, 'plugins', this.manifest.id);
-    this.indexPath = path.join(this.pluginPath, 'atlas-index.json');
+    this.indexPath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/atlas-index.json`;
+    if (Platform.isDesktopApp) {
+      this.basePath = this.app.vault.adapter.getBasePath();
+      this.pluginPath = path.join(this.basePath, this.app.vault.configDir, 'plugins', this.manifest.id);
+    }
     this.registerView(VIEW_TYPE, (leaf) => new AtlasView(leaf, this));
+    this.registerView(TERRAIN_VIEW_TYPE, (leaf) => new TerrainLabView(leaf, this));
     this.addRibbonIcon('map', 'Open Gib Atlas', () => this.activateView());
+    this.addRibbonIcon('mountain', 'Open terrain laboratory', () => this.activateTerrainLab());
     this.addCommand({ id: 'open-atlas', name: 'Open semantic atlas', callback: () => this.activateView() });
+    this.addCommand({ id: 'open-terrain-lab', name: 'Open terrain laboratory', callback: () => this.activateTerrainLab() });
     this.addCommand({ id: 'rebuild-atlas', name: 'Rebuild semantic atlas', callback: () => this.rebuild() });
     this.addSettingTab(new AtlasSettingTab(this.app, this));
     await this.loadIndex();
   }
-  onunload() { this.app.workspace.detachLeavesOfType(VIEW_TYPE); }
+  onunload() {
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE);
+    this.app.workspace.detachLeavesOfType(TERRAIN_VIEW_TYPE);
+  }
   async loadSettings() {
     const saved = await this.loadData() || {};
     if ((saved.settingsVersion || 1) < 2) {
-      saved.settingsVersion = 2;
       saved.neighbors = 8;
       saved.compactness = 0.12;
       saved.collisionSpacing = 10;
     }
+    if ((saved.settingsVersion || 1) < 3) {
+      saved.terrainSeed = 37;
+      saved.terrainGeometry = JSON.parse(JSON.stringify(DEFAULT_TERRAIN_GEOMETRY));
+      saved.terrainContours = true;
+    }
+    saved.settingsVersion = 3;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
     await this.saveData(this.settings);
   }
@@ -974,6 +1009,11 @@ module.exports = class GibAtlasPlugin extends Plugin {
   async activateView() {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
     if (!leaf) { leaf = this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: VIEW_TYPE, active: true }); }
+    this.app.workspace.revealLeaf(leaf);
+  }
+  async activateTerrainLab() {
+    let leaf = this.app.workspace.getLeavesOfType(TERRAIN_VIEW_TYPE)[0];
+    if (!leaf) { leaf = this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: TERRAIN_VIEW_TYPE, active: true }); }
     this.app.workspace.revealLeaf(leaf);
   }
   refreshViews() { for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.refresh?.(); }
@@ -1006,8 +1046,8 @@ module.exports = class GibAtlasPlugin extends Plugin {
   }
   async loadIndex() {
     try {
-      if (!fs.existsSync(this.indexPath)) { this.status = 'Index not built'; return; }
-      const parsed = JSON.parse(await fs.promises.readFile(this.indexPath, 'utf8'));
+      if (!(await this.app.vault.adapter.exists(this.indexPath))) { this.status = 'Index not built'; return; }
+      const parsed = JSON.parse(await this.app.vault.adapter.read(this.indexPath));
       if (parsed.version !== 5 || !Array.isArray(parsed.records) || !Array.isArray(parsed.points) || !parsed.land) throw new Error('Unsupported cache');
       this.layout = parsed;
       this.status = `${parsed.records.length} notes · cached local atlas`;
@@ -1021,15 +1061,15 @@ module.exports = class GibAtlasPlugin extends Plugin {
   async prepareModel() {
     if (this.extractor) return this.extractor;
     this.setStatus('Loading local semantic model…');
-    const wasm = zlib.gunzipSync(Buffer.from(EMBEDDED_WASM_GZIP, 'base64'));
-    const moduleSource = zlib.gunzipSync(Buffer.from(EMBEDDED_WASM_MODULE_GZIP, 'base64')).toString('utf8');
+    const wasm = await inflateEmbeddedBase64(EMBEDDED_WASM_GZIP);
+    const moduleSource = await inflateEmbeddedBase64(EMBEDDED_WASM_MODULE_GZIP, true);
     const moduleUrl = URL.createObjectURL(new Blob([moduleSource], { type: 'text/javascript' }));
     env.allowRemoteModels = true;
     env.allowLocalModels = false;
-    env.useBrowserCache = false;
+    env.useBrowserCache = !Platform.isDesktopApp;
     env.useFSCache = false;
-    env.useCustomCache = true;
-    env.customCache = new FileModelCache(path.join(this.pluginPath, 'models'));
+    env.useCustomCache = Platform.isDesktopApp;
+    env.customCache = Platform.isDesktopApp ? new FileModelCache(path.join(this.pluginPath, 'models')) : undefined;
     env.backends.onnx.wasm.numThreads = 1;
     env.backends.onnx.wasm.proxy = false;
     env.backends.onnx.wasm.wasmBinary = wasm;
@@ -1097,7 +1137,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
       this.setStatus('Subdividing regions, neighborhoods, and lots…');
       const land = buildLandPartition(points, records, profiles, communities);
       this.layout = { version: 5, model: MODEL_ID, createdAt: Date.now(), records, points, edges, profiles, communities, labels, land };
-      await fs.promises.writeFile(this.indexPath, JSON.stringify(this.layout));
+      await this.app.vault.adapter.write(this.indexPath, JSON.stringify(this.layout));
       this.status = `${land.lots.length} lots · ${land.regions.length} regions · ${land.neighborhoods.length} neighborhoods`;
       this.progress = null;
       this.refreshViews();
