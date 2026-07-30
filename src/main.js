@@ -20,10 +20,9 @@ const DEFAULT_SETTINGS = {
   commonSignalRemoval: 0.3,
   neighborhoodDetail: 1.35,
   showConnections: true,
-  showRoads: true,
   showRegions: true,
   showRegionLabels: true,
-  defaultPresentation: 'town'
+  defaultPresentation: 'land'
 };
 
 function cachePath(root, request) {
@@ -453,87 +452,158 @@ function buildPropertyProfiles(records, graphData, communities) {
   });
 }
 
-function relaxPropertyCollisions(basePoints, profiles) {
-  const center = basePoints.reduce((sum, point) => ({ x: sum.x + point.x / basePoints.length, y: sum.y + point.y / basePoints.length }), { x: 0, y: 0 });
-  const anchors = basePoints.map((point) => ({ x: center.x + (point.x - center.x) * 1.65, y: center.y + (point.y - center.y) * 1.65 }));
-  const points = anchors.map((point) => ({ ...point }));
-  for (let pass = 0; pass < 260; pass++) {
-    const movement = points.map(() => ({ x: 0, y: 0 }));
-    for (let i = 0; i < points.length; i++) {
-      for (let j = i + 1; j < points.length; j++) {
-        let dx = points[j].x - points[i].x, dy = points[j].y - points[i].y;
-        let distance = Math.hypot(dx, dy);
-        const minimum = profiles[i].lotRadius + profiles[j].lotRadius + 3;
-        if (distance >= minimum) continue;
-        if (distance < 0.001) { dx = ((i * 19 + j * 23) % 13) - 6; dy = ((i * 31 + j * 11) % 13) - 6; distance = Math.hypot(dx, dy) || 1; }
-        const force = (minimum - distance) * 0.28;
-        movement[i].x -= dx / distance * force; movement[i].y -= dy / distance * force;
-        movement[j].x += dx / distance * force; movement[j].y += dy / distance * force;
+function polygonArea(polygon) {
+  let area = 0;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+    area += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(area) / 2;
+}
+
+function polygonCentroid(polygon) {
+  let twiceArea = 0, x = 0, y = 0;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i], b = polygon[(i + 1) % polygon.length], cross = a.x * b.y - b.x * a.y;
+    twiceArea += cross; x += (a.x + b.x) * cross; y += (a.y + b.y) * cross;
+  }
+  if (Math.abs(twiceArea) < 1e-8) return polygon.reduce((sum, point) => ({ x: sum.x + point.x / polygon.length, y: sum.y + point.y / polygon.length }), { x: 0, y: 0 });
+  return { x: x / (3 * twiceArea), y: y / (3 * twiceArea) };
+}
+
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i], b = polygon[j];
+    if ((a.y > point.y) !== (b.y > point.y) && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y || 1e-9) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+function placeInside(point, polygon) {
+  if (pointInPolygon(point, polygon)) return { ...point };
+  const center = polygonCentroid(polygon);
+  for (let amount = 0.05; amount <= 1; amount += 0.05) {
+    const candidate = { x: point.x + (center.x - point.x) * amount, y: point.y + (center.y - point.y) * amount };
+    if (pointInPolygon(candidate, polygon)) return candidate;
+  }
+  return center;
+}
+
+function clipHalfPlane(polygon, a, b, c) {
+  if (!polygon.length) return [];
+  const output = [];
+  const value = (point) => a * point.x + b * point.y - c;
+  for (let i = 0; i < polygon.length; i++) {
+    const current = polygon[i], previous = polygon[(i + polygon.length - 1) % polygon.length];
+    const currentValue = value(current), previousValue = value(previous);
+    const currentInside = currentValue <= 1e-7, previousInside = previousValue <= 1e-7;
+    if (currentInside !== previousInside) {
+      const ratio = previousValue / (previousValue - currentValue || 1e-9);
+      output.push({ x: previous.x + (current.x - previous.x) * ratio, y: previous.y + (current.y - previous.y) * ratio });
+    }
+    if (currentInside) output.push(current);
+  }
+  return output;
+}
+
+function powerCells(parent, sites, weights) {
+  return sites.map((site, index) => {
+    let polygon = parent.map((point) => ({ ...point }));
+    for (let otherIndex = 0; otherIndex < sites.length && polygon.length; otherIndex++) {
+      if (otherIndex === index) continue;
+      const other = sites[otherIndex];
+      const a = 2 * (other.x - site.x), b = 2 * (other.y - site.y);
+      const c = other.x * other.x + other.y * other.y - site.x * site.x - site.y * site.y + weights[index] - weights[otherIndex];
+      polygon = clipHalfPlane(polygon, a, b, c);
+    }
+    return polygon;
+  });
+}
+
+function powerPartition(parent, rawSites, rawTargets, iterations = 90) {
+  if (!rawSites.length) return [];
+  if (rawSites.length === 1) return [parent.map((point) => ({ ...point }))];
+  const parentArea = polygonArea(parent);
+  const scale = Math.sqrt(parentArea);
+  const sites = rawSites.map((site) => placeInside(site, parent));
+  for (let i = 0; i < sites.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (Math.hypot(sites[i].x - sites[j].x, sites[i].y - sites[j].y) < scale * 0.0001) {
+        const angle = i * 2.399963229728653;
+        sites[i] = placeInside({ x: sites[i].x + Math.cos(angle) * scale * 0.003, y: sites[i].y + Math.sin(angle) * scale * 0.003 }, parent);
       }
     }
-    for (let i = 0; i < points.length; i++) {
-      const anchorStrength = 0.006 + profiles[i].centrality * 0.004;
-      points[i].x += movement[i].x + (anchors[i].x - points[i].x) * anchorStrength;
-      points[i].y += movement[i].y + (anchors[i].y - points[i].y) * anchorStrength;
+  }
+  const targetTotal = rawTargets.reduce((sum, value) => sum + Math.max(0.001, value), 0);
+  const targets = rawTargets.map((value) => Math.max(0.001, value) / targetTotal * parentArea);
+  const weights = Array(sites.length).fill(0);
+  let cells = [];
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    cells = powerCells(parent, sites, weights);
+    const step = 0.055 * (1 - iteration / iterations) + 0.008;
+    for (let i = 0; i < sites.length; i++) weights[i] += (targets[i] - polygonArea(cells[i])) * step;
+    const mean = weights.reduce((sum, value) => sum + value, 0) / weights.length;
+    for (let i = 0; i < weights.length; i++) weights[i] -= mean;
+  }
+  cells = powerCells(parent, sites, weights);
+  const minimumArea = parentArea * 1e-7;
+  if (cells.some((cell) => polygonArea(cell) < minimumArea)) {
+    for (const blend of [0.72, 0.48, 0.24, 0]) {
+      const candidate = powerCells(parent, sites, weights.map((weight) => weight * blend));
+      cells = candidate;
+      if (candidate.every((cell) => polygonArea(cell) >= minimumArea)) break;
     }
   }
-  return points;
+  return cells;
 }
 
-function buildRoadNetwork(edges, communities, profiles) {
-  const selected = new Map();
-  const key = (edge) => `${Math.min(edge.a, edge.b)}:${Math.max(edge.a, edge.b)}`;
-  const add = (edge, kind) => {
-    const id = key(edge), current = selected.get(id);
-    const priority = { lane: 1, village: 2, regional: 3 };
-    if (!current || priority[kind] > priority[current.kind]) selected.set(id, { ...edge, kind });
-  };
-  const neighborhoods = [...new Set(communities.neighborhood)].filter((value) => value >= 0);
-  for (const neighborhood of neighborhoods) {
-    const members = communities.neighborhood.map((value, index) => value === neighborhood ? index : -1).filter((index) => index >= 0);
-    const memberSet = new Set(members);
-    const candidates = edges.filter((edge) => memberSet.has(edge.a) && memberSet.has(edge.b)).sort((a, b) => b.weight - a.weight);
-    const parent = new Map(members.map((member) => [member, member]));
-    const find = (node) => { let root = node; while (parent.get(root) !== root) root = parent.get(root); while (parent.get(node) !== node) { const next = parent.get(node); parent.set(node, root); node = next; } return root; };
-    for (const edge of candidates) {
-      const a = find(edge.a), b = find(edge.b);
-      if (a !== b) { parent.set(a, b); add(edge, 'lane'); }
-    }
-    const extraLimit = Math.max(0, Math.floor(members.length * 0.22));
-    candidates.filter((edge) => !selected.has(key(edge))).slice(0, extraLimit).forEach((edge) => add(edge, 'lane'));
+function buildLandPartition(points, records, profiles, communities) {
+  const minX = Math.min(...points.map((point) => point.x)), maxX = Math.max(...points.map((point) => point.x));
+  const minY = Math.min(...points.map((point) => point.y)), maxY = Math.max(...points.map((point) => point.y));
+  const width = Math.max(200, maxX - minX), height = Math.max(200, maxY - minY), padding = Math.max(width, height) * 0.16;
+  const world = [
+    { x: minX - padding, y: minY - padding }, { x: maxX + padding, y: minY - padding },
+    { x: maxX + padding, y: maxY + padding }, { x: minX - padding, y: maxY + padding }
+  ];
+  const regionMembers = Array.from({ length: communities.regionCount }, (_, region) => points.map((_, index) => communities.region[index] === region ? index : -1).filter((index) => index >= 0));
+  const outliers = points.map((_, index) => communities.region[index] < 0 ? index : -1).filter((index) => index >= 0);
+  const demand = (index) => 1 + profiles[index].size * 1.7 + profiles[index].rurality * 1.2;
+  const regionSites = regionMembers.map((members) => members.reduce((sum, index) => ({ x: sum.x + points[index].x / members.length, y: sum.y + points[index].y / members.length }), { x: 0, y: 0 }));
+  const countrySites = [
+    { x: minX - padding * 0.72, y: minY - padding * 0.72 }, { x: (minX + maxX) / 2, y: minY - padding * 0.78 },
+    { x: maxX + padding * 0.72, y: minY - padding * 0.72 }, { x: maxX + padding * 0.78, y: (minY + maxY) / 2 },
+    { x: maxX + padding * 0.72, y: maxY + padding * 0.72 }, { x: (minX + maxX) / 2, y: maxY + padding * 0.78 },
+    { x: minX - padding * 0.72, y: maxY + padding * 0.72 }, { x: minX - padding * 0.78, y: (minY + maxY) / 2 }
+  ];
+  const regionTargets = regionMembers.map((members) => members.reduce((sum, index) => sum + demand(index), 0));
+  const outlierTargets = outliers.map((index) => demand(index) * 1.45);
+  const openCountryDemand = (regionTargets.reduce((sum, value) => sum + value, 0) + outlierTargets.reduce((sum, value) => sum + value, 0)) * 0.24;
+  const topSites = regionSites.concat(outliers.map((index) => points[index]), countrySites);
+  const topTargets = regionTargets.concat(outlierTargets, countrySites.map(() => openCountryDemand / countrySites.length));
+  const topCells = powerPartition(world, topSites, topTargets, 130);
+  const regions = regionMembers.map((members, region) => ({ region, polygon: topCells[region], members }));
+  const outlierLots = outliers.map((fileIndex, offset) => ({ fileIndex, region: -1, neighborhood: -1, polygon: topCells[regionMembers.length + offset], countryland: true }));
+  const countryland = countrySites.map((_, offset) => ({ polygon: topCells[regionMembers.length + outliers.length + offset] }));
+  const neighborhoods = [];
+  const lots = [...outlierLots];
+  for (const regionData of regions) {
+    if (regionData.polygon.length < 3) continue;
+    const neighborhoodIds = [...new Set(regionData.members.map((index) => communities.neighborhood[index]))].filter((value) => value >= 0);
+    const neighborhoodMembers = neighborhoodIds.map((neighborhood) => regionData.members.filter((index) => communities.neighborhood[index] === neighborhood));
+    const neighborhoodSites = neighborhoodMembers.map((members) => members.reduce((sum, index) => ({ x: sum.x + points[index].x / members.length, y: sum.y + points[index].y / members.length }), { x: 0, y: 0 }));
+    const neighborhoodTargets = neighborhoodMembers.map((members) => members.reduce((sum, index) => sum + demand(index), 0));
+    const neighborhoodCells = powerPartition(regionData.polygon, neighborhoodSites, neighborhoodTargets, 100);
+    neighborhoodIds.forEach((neighborhood, localIndex) => {
+      const polygon = neighborhoodCells[localIndex];
+      const members = neighborhoodMembers[localIndex];
+      neighborhoods.push({ neighborhood, region: regionData.region, polygon, members });
+      if (polygon.length < 3) return;
+      const fileCells = powerPartition(polygon, members.map((index) => points[index]), members.map((index) => demand(index)), 90);
+      members.forEach((fileIndex, fileOffset) => lots.push({ fileIndex, region: regionData.region, neighborhood, polygon: fileCells[fileOffset], countryland: false }));
+    });
   }
-  const villageBridges = new Map(), regionalBridges = new Map();
-  for (const edge of edges) {
-    const regionA = communities.region[edge.a], regionB = communities.region[edge.b];
-    const neighborhoodA = communities.neighborhood[edge.a], neighborhoodB = communities.neighborhood[edge.b];
-    if (regionA >= 0 && regionA === regionB && neighborhoodA !== neighborhoodB) {
-      const id = [neighborhoodA, neighborhoodB].sort((a, b) => a - b).join(':');
-      if (!villageBridges.has(id) || edge.weight > villageBridges.get(id).weight) villageBridges.set(id, edge);
-    } else if (regionA >= 0 && regionB >= 0 && regionA !== regionB) {
-      const id = [regionA, regionB].sort((a, b) => a - b).join(':');
-      if (!regionalBridges.has(id) || edge.weight > regionalBridges.get(id).weight) regionalBridges.set(id, edge);
-    }
-  }
-  villageBridges.forEach((edge) => add(edge, 'village'));
-  regionalBridges.forEach((edge) => add(edge, 'regional'));
-  return [...selected.values()].map((road) => ({ ...road, importance: clamp01((profiles[road.a].bridgeStrength + profiles[road.b].bridgeStrength) / 2) }));
-}
-
-function hashString(value) {
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
-  return hash >>> 0;
-}
-
-function lotPolygon(point, profile, pathKey) {
-  const random = mulberry32(hashString(pathKey));
-  const count = 9;
-  const rotation = random() * Math.PI * 2;
-  return Array.from({ length: count }, (_, index) => {
-    const angle = rotation + index / count * Math.PI * 2;
-    const radius = profile.lotRadius * (0.82 + random() * 0.28);
-    return { x: point.x + Math.cos(angle) * radius, y: point.y + Math.sin(angle) * radius };
-  });
+  return { world, regions, neighborhoods, lots, countryland };
 }
 
 class AtlasView extends ItemView {
@@ -543,7 +613,7 @@ class AtlasView extends ItemView {
     this.camera = { x: 0, y: 0, zoom: 1 };
     this.hovered = -1;
     this.drag = null;
-    this.mode = plugin.settings.defaultPresentation || 'town';
+    this.mode = plugin.settings.defaultPresentation === 'points' ? 'points' : 'land';
   }
   getViewType() { return VIEW_TYPE; }
   getDisplayText() { return 'Gib Atlas'; }
@@ -557,10 +627,10 @@ class AtlasView extends ItemView {
     setIcon(icon, 'map');
     identity.createEl('strong', { text: 'Gib Atlas' });
     this.statusEl = toolbar.createDiv({ cls: 'gib-atlas-status', text: 'Preparing atlas…' });
-    this.modeButton = toolbar.createEl('button', { attr: { 'aria-label': 'Toggle town and semantic point views' } });
+    this.modeButton = toolbar.createEl('button', { attr: { 'aria-label': 'Toggle land and semantic point views' } });
     this.updateModeButton();
     this.modeButton.onclick = async () => {
-      this.mode = this.mode === 'town' ? 'points' : 'town';
+      this.mode = this.mode === 'land' ? 'points' : 'land';
       this.plugin.settings.defaultPresentation = this.mode;
       await this.plugin.saveSettings();
       this.updateModeButton();
@@ -586,12 +656,12 @@ class AtlasView extends ItemView {
   updateModeButton() {
     if (!this.modeButton) return;
     this.modeButton.empty();
-    setIcon(this.modeButton, this.mode === 'town' ? 'scatter-chart' : 'house');
-    this.modeButton.setAttribute('aria-label', this.mode === 'town' ? 'Show semantic points' : 'Show hamlet view');
+    setIcon(this.modeButton, this.mode === 'land' ? 'scatter-chart' : 'map');
+    this.modeButton.setAttribute('aria-label', this.mode === 'land' ? 'Show semantic points' : 'Show land partition');
   }
   activePoints() {
     const layout = this.plugin.layout;
-    return this.mode === 'town' && layout?.townPoints?.length === layout?.records?.length ? layout.townPoints : layout?.points || [];
+    return layout?.points || [];
   }
   refresh() {
     const count = this.plugin.layout?.records?.length || 0;
@@ -611,7 +681,7 @@ class AtlasView extends ItemView {
   fit() {
     const layout = this.plugin.layout;
     if (!layout?.points?.length || !this.canvas) { this.draw(); return; }
-    const points = this.activePoints();
+    const points = this.mode === 'land' && layout.land?.world?.length ? layout.land.world : this.activePoints();
     const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
     const width = this.canvas.clientWidth || 1, height = this.canvas.clientHeight || 1;
@@ -655,11 +725,13 @@ class AtlasView extends ItemView {
       const point = this.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
       let nearest = -1, nearestDistance = 10 / this.camera.zoom;
       const points = this.activePoints();
-      for (let i = 0; i < points.length; i++) {
+      if (this.mode === 'land' && this.plugin.layout?.land?.lots) {
+        const lot = this.plugin.layout.land.lots.find((candidate) => candidate.polygon?.length >= 3 && pointInPolygon(point, candidate.polygon));
+        if (lot) nearest = lot.fileIndex;
+      } else for (let i = 0; i < points.length; i++) {
         const candidate = points[i];
         const distance = Math.hypot(candidate.x - point.x, candidate.y - point.y);
-        const hitRadius = this.mode === 'town' ? this.plugin.layout?.profiles?.[i]?.lotRadius || nearestDistance : nearestDistance;
-        if (distance < hitRadius && (nearest < 0 || distance < nearestDistance)) { nearest = i; nearestDistance = distance; }
+        if (distance < nearestDistance) { nearest = i; nearestDistance = distance; }
       }
       this.hovered = nearest;
       if (nearest >= 0) {
@@ -668,7 +740,7 @@ class AtlasView extends ItemView {
         const neighborhood = layout.communities?.neighborhood?.[nearest];
         const regionLabel = region >= 0 ? layout.labels?.[region]?.label || `Region ${region + 1}` : null;
         const profile = layout.profiles?.[nearest];
-        this.tip.setText(`${layout.records[nearest].name}${region >= 0 ? ` · ${regionLabel} · Neighborhood ${neighborhood + 1}` : ' · Semantic outlier'}${this.mode === 'town' && profile ? ` · ${profile.character}` : ''}`);
+        this.tip.setText(`${layout.records[nearest].name}${region >= 0 ? ` · ${regionLabel} · Neighborhood ${neighborhood + 1}` : ' · Countryland outlier'}${this.mode === 'land' && profile ? ` · ${profile.character}` : ''}`);
         this.tip.style.left = `${event.clientX - rect.left + 12}px`;
         this.tip.style.top = `${event.clientY - rect.top + 12}px`;
         this.tip.show();
@@ -685,79 +757,61 @@ class AtlasView extends ItemView {
     });
     this.canvas.addEventListener('pointerleave', () => { this.drag = null; this.hovered = -1; this.tip.hide(); this.draw(); });
   }
-  roadCurve(road, points) {
-    const a = this.worldToScreen(points[road.a]), b = this.worldToScreen(points[road.b]);
-    const dx = b.x - a.x, dy = b.y - a.y, distance = Math.hypot(dx, dy) || 1;
-    const random = mulberry32(hashString(`${road.a}:${road.b}`));
-    const bend = (random() - 0.5) * Math.min(30, distance * 0.16);
-    return { a, b, c: { x: (a.x + b.x) / 2 - dy / distance * bend, y: (a.y + b.y) / 2 + dx / distance * bend } };
-  }
-  drawRoads(ctx, layout, points) {
-    const roads = layout.roads || [];
-    const widths = { lane: 2.2, village: 3.8, regional: 5.4 };
-    for (const pass of ['edge', 'surface']) {
-      for (const road of roads) {
-        const curve = this.roadCurve(road, points);
-        const base = (widths[road.kind] || 2) + road.importance * 1.15;
-        ctx.beginPath(); ctx.moveTo(curve.a.x, curve.a.y); ctx.quadraticCurveTo(curve.c.x, curve.c.y, curve.b.x, curve.b.y);
-        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        ctx.lineWidth = pass === 'edge' ? base + 1.8 : base;
-        ctx.strokeStyle = pass === 'edge' ? '#6f6552' : road.kind === 'regional' ? '#d7c39b' : '#e1d2ae';
-        ctx.globalAlpha = pass === 'edge' ? 0.78 : 0.96;
-        ctx.stroke();
-      }
-    }
-    ctx.globalAlpha = 1;
-  }
-  drawLot(ctx, layout, points, index) {
-    const point = points[index], profile = layout.profiles[index], record = layout.records[index];
-    const polygon = lotPolygon(point, profile, record.path);
-    const screenPolygon = polygon.map((vertex) => this.worldToScreen(vertex));
-    ctx.beginPath(); ctx.moveTo(screenPolygon[0].x, screenPolygon[0].y);
-    for (let i = 1; i < screenPolygon.length; i++) ctx.lineTo(screenPolygon[i].x, screenPolygon[i].y);
+  tracePolygon(ctx, polygon) {
+    if (!polygon?.length) return false;
+    const first = this.worldToScreen(polygon[0]);
+    ctx.beginPath(); ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < polygon.length; i++) { const point = this.worldToScreen(polygon[i]); ctx.lineTo(point.x, point.y); }
     ctx.closePath();
-    const region = layout.communities.region[index];
-    ctx.fillStyle = profile.character === 'farmstead' ? '#cbd1a9' : regionColor(Math.max(0, region), 0, 0.12);
-    ctx.globalAlpha = profile.character === 'farmstead' ? 0.58 : 0.5;
-    ctx.fill();
-    ctx.strokeStyle = '#786f5a'; ctx.globalAlpha = 0.62; ctx.lineWidth = index === this.hovered ? 1.7 : 0.75; ctx.stroke();
-    if (profile.rurality > 0.42) {
-      ctx.save();
-      ctx.clip();
-      const bounds = screenPolygon.reduce((box, vertex) => ({ minX: Math.min(box.minX, vertex.x), maxX: Math.max(box.maxX, vertex.x), minY: Math.min(box.minY, vertex.y), maxY: Math.max(box.maxY, vertex.y) }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
-      ctx.strokeStyle = '#8b876a'; ctx.globalAlpha = 0.34; ctx.lineWidth = 0.65;
-      const spacing = 5 + (1 - profile.topicBreadth) * 3;
-      for (let offset = bounds.minX - (bounds.maxY - bounds.minY); offset < bounds.maxX + (bounds.maxY - bounds.minY); offset += spacing) {
-        ctx.beginPath(); ctx.moveTo(offset, bounds.maxY); ctx.lineTo(offset + (bounds.maxY - bounds.minY) * 0.55, bounds.minY); ctx.stroke();
+    return true;
+  }
+  drawLand(ctx, layout, style) {
+    const land = layout.land;
+    if (!land?.world?.length) return;
+    this.tracePolygon(ctx, land.world);
+    ctx.fillStyle = '#d9d2b7'; ctx.globalAlpha = 1; ctx.fill();
+    for (const region of land.regions) {
+      if (!this.tracePolygon(ctx, region.polygon)) continue;
+      ctx.fillStyle = regionColor(region.region, 0, 0.18); ctx.globalAlpha = 1; ctx.fill();
+    }
+    for (const lot of land.lots) {
+      if (!this.tracePolygon(ctx, lot.polygon)) continue;
+      const hovered = lot.fileIndex === this.hovered;
+      ctx.fillStyle = hovered ? (style.getPropertyValue('--interactive-accent').trim() || '#7c6ee6') : lot.countryland ? '#c5bd98' : regionColor(lot.region, lot.neighborhood, 0.055);
+      ctx.globalAlpha = hovered ? 0.3 : 1; ctx.fill();
+      ctx.strokeStyle = hovered ? (style.getPropertyValue('--interactive-accent').trim() || '#7c6ee6') : '#756e5d';
+      ctx.globalAlpha = hovered ? 0.95 : lot.countryland ? 0.5 : 0.32;
+      ctx.lineWidth = hovered ? 1.7 : 0.55;
+      ctx.stroke();
+    }
+    for (const neighborhood of land.neighborhoods) {
+      if (!this.tracePolygon(ctx, neighborhood.polygon)) continue;
+      ctx.strokeStyle = regionColor(neighborhood.region, neighborhood.neighborhood, 0.72);
+      ctx.globalAlpha = 0.78; ctx.lineWidth = 1.15; ctx.stroke();
+    }
+    for (const region of land.regions) {
+      if (!this.tracePolygon(ctx, region.polygon)) continue;
+      ctx.strokeStyle = regionColor(region.region, 0, 0.95);
+      ctx.globalAlpha = 0.86; ctx.lineWidth = 2.1; ctx.stroke();
+    }
+    this.tracePolygon(ctx, land.world);
+    ctx.strokeStyle = '#4f4a40'; ctx.globalAlpha = 0.9; ctx.lineWidth = 2.4; ctx.stroke();
+    if (this.plugin.settings.showRegionLabels) {
+      ctx.font = '600 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (const region of land.regions) {
+        if (region.polygon.length < 3) continue;
+        const center = this.worldToScreen(polygonCentroid(region.polygon));
+        const label = layout.labels?.[region.region]?.label || `Region ${region.region + 1}`;
+        const width = ctx.measureText(label).width + 12;
+        ctx.fillStyle = '#e9e2d1'; ctx.globalAlpha = 0.84; ctx.fillRect(center.x - width / 2, center.y - 10, width, 20);
+        ctx.fillStyle = '#49443a'; ctx.globalAlpha = 0.95; ctx.fillText(label, center.x, center.y);
       }
-      ctx.restore();
+      const largestCountry = [...land.countryland].sort((a, b) => polygonArea(b.polygon) - polygonArea(a.polygon))[0];
+      if (largestCountry?.polygon?.length >= 3) {
+        const center = this.worldToScreen(polygonCentroid(largestCountry.polygon));
+        ctx.font = 'italic 11px serif'; ctx.fillStyle = '#676151'; ctx.globalAlpha = 0.72; ctx.fillText('Countryland', center.x, center.y);
+      }
     }
-    const connected = (layout.roads || []).filter((road) => road.a === index || road.b === index);
-    let angle;
-    if (connected.length) {
-      const priority = { regional: 3, village: 2, lane: 1 };
-      const road = connected.sort((a, b) => priority[b.kind] - priority[a.kind])[0];
-      const other = points[road.a === index ? road.b : road.a];
-      angle = Math.atan2(other.y - point.y, other.x - point.x);
-    } else angle = mulberry32(hashString(record.path))() * Math.PI;
-    const center = this.worldToScreen(point);
-    const scale = Math.max(0.45, this.camera.zoom);
-    const width = (5.2 + profile.buildingScale * 4.8) * scale;
-    const height = (3.6 + profile.buildingScale * 2.8) * scale;
-    ctx.save(); ctx.translate(center.x, center.y); ctx.rotate(angle);
-    ctx.fillStyle = '#d9c9a5'; ctx.strokeStyle = '#4f493d'; ctx.globalAlpha = 1; ctx.lineWidth = 1;
-    ctx.fillRect(-width / 2, -height / 2, width, height); ctx.strokeRect(-width / 2, -height / 2, width, height);
-    ctx.fillStyle = profile.character === 'farmstead' ? '#9b674c' : '#a87557';
-    ctx.beginPath(); ctx.moveTo(-width / 2 - 1, -height / 2); ctx.lineTo(0, -height / 2 - Math.max(2, height * 0.28)); ctx.lineTo(width / 2 + 1, -height / 2); ctx.closePath(); ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, -height / 2 - Math.max(2, height * 0.28)); ctx.lineTo(0, height / 2); ctx.stroke();
-    if (profile.topicBreadth > 0.62 || profile.sectionComplexity > 0.7) {
-      const annexWidth = width * 0.42, annexHeight = height * 0.52;
-      ctx.fillStyle = '#ccb991'; ctx.fillRect(width * 0.28, height * 0.18, annexWidth, annexHeight); ctx.strokeRect(width * 0.28, height * 0.18, annexWidth, annexHeight);
-    }
-    if (profile.character === 'farmstead' && profile.topicBreadth > 0.38) {
-      ctx.fillStyle = '#b68a66'; ctx.fillRect(-width * 0.75, height * 0.82, width * 0.34, height * 0.3); ctx.strokeRect(-width * 0.75, height * 0.82, width * 0.34, height * 0.3);
-    }
-    ctx.restore();
     ctx.globalAlpha = 1;
   }
   draw() {
@@ -767,9 +821,14 @@ class AtlasView extends ItemView {
     ctx.clearRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
     const layout = this.plugin.layout;
     if (!layout?.points?.length) return;
-    if (this.mode === 'town') { ctx.fillStyle = '#e9e2d1'; ctx.fillRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight); }
-    const points = this.activePoints();
     const style = getComputedStyle(this.contentEl);
+    if (this.mode === 'land') {
+      ctx.fillStyle = style.getPropertyValue('--background-primary').trim() || '#171717';
+      ctx.fillRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
+      this.drawLand(ctx, layout, style);
+      return;
+    }
+    const points = this.activePoints();
     const muted = style.getPropertyValue('--text-muted').trim() || '#888';
     const accent = style.getPropertyValue('--interactive-accent').trim() || '#7c6ee6';
     if (this.plugin.settings.showRegions && layout.communities?.region) {
@@ -789,8 +848,7 @@ class AtlasView extends ItemView {
         ctx.stroke();
       }
     }
-    if (this.mode === 'town' && this.plugin.settings.showRoads) this.drawRoads(ctx, layout, points);
-    if (this.mode !== 'town' && this.plugin.settings.showConnections) {
+    if (this.plugin.settings.showConnections) {
       ctx.strokeStyle = muted;
       ctx.globalAlpha = 0.16;
       ctx.lineWidth = 0.8;
@@ -801,7 +859,6 @@ class AtlasView extends ItemView {
     }
     ctx.globalAlpha = 1;
     for (let i = 0; i < points.length; i++) {
-      if (this.mode === 'town' && layout.profiles?.[i]) { this.drawLot(ctx, layout, points, i); continue; }
       const point = this.worldToScreen(points[i]);
       const hovered = i === this.hovered;
       ctx.beginPath();
@@ -873,9 +930,6 @@ class AtlasSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('Show semantic connections').addToggle((toggle) => toggle
       .setValue(this.plugin.settings.showConnections)
       .onChange(async (value) => { this.plugin.settings.showConnections = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
-    new Setting(containerEl).setName('Show semantic roads').setDesc('Roads are a sparse hierarchy of genuine semantic graph relationships.').addToggle((toggle) => toggle
-      .setValue(this.plugin.settings.showRoads)
-      .onChange(async (value) => { this.plugin.settings.showRoads = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
     new Setting(containerEl).setName('Show semantic regions').setDesc('Draw subtle boundaries around broad graph communities.').addToggle((toggle) => toggle
       .setValue(this.plugin.settings.showRegions)
       .onChange(async (value) => { this.plugin.settings.showRegions = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
@@ -954,7 +1008,7 @@ module.exports = class GibAtlasPlugin extends Plugin {
     try {
       if (!fs.existsSync(this.indexPath)) { this.status = 'Index not built'; return; }
       const parsed = JSON.parse(await fs.promises.readFile(this.indexPath, 'utf8'));
-      if (parsed.version !== 4 || !Array.isArray(parsed.records) || !Array.isArray(parsed.points)) throw new Error('Unsupported cache');
+      if (parsed.version !== 5 || !Array.isArray(parsed.records) || !Array.isArray(parsed.points) || !parsed.land) throw new Error('Unsupported cache');
       this.layout = parsed;
       this.status = `${parsed.records.length} notes · cached local atlas`;
       this.progress = null;
@@ -1040,11 +1094,11 @@ module.exports = class GibAtlasPlugin extends Plugin {
       const points = relaxCollisions(normalizeLayout(umap.fit(indexedRecords)), this.settings.collisionSpacing);
       const edges = graphData.edges;
       const profiles = buildPropertyProfiles(records, graphData, communities);
-      const townPoints = relaxPropertyCollisions(points, profiles);
-      const roads = buildRoadNetwork(edges, communities, profiles);
-      this.layout = { version: 4, model: MODEL_ID, createdAt: Date.now(), records, points, townPoints, edges, roads, profiles, communities, labels };
+      this.setStatus('Subdividing regions, neighborhoods, and lots…');
+      const land = buildLandPartition(points, records, profiles, communities);
+      this.layout = { version: 5, model: MODEL_ID, createdAt: Date.now(), records, points, edges, profiles, communities, labels, land };
       await fs.promises.writeFile(this.indexPath, JSON.stringify(this.layout));
-      this.status = `${records.length} properties · ${communities.regionCount} districts · ${roads.length} semantic roads`;
+      this.status = `${land.lots.length} lots · ${land.regions.length} regions · ${land.neighborhoods.length} neighborhoods`;
       this.progress = null;
       this.refreshViews();
       new Notice(`Gib Atlas mapped ${records.length} notes.`);
