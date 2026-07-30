@@ -163,6 +163,20 @@
   color: var(--text-on-accent);
 }
 
+.gib-terrain-tool-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.gib-terrain-tool-control input[type='range'] {
+  width: 74px;
+  margin: 0;
+}
+
 .gib-terrain-stage {
   position: relative;
   flex: 1;
@@ -198,6 +212,14 @@
   .gib-terrain-status {
     order: 3;
     flex-basis: 100%;
+  }
+  .gib-terrain-tool-control {
+    flex: 1;
+    min-width: 112px;
+  }
+  .gib-terrain-tool-control input[type='range'] {
+    flex: 1;
+    width: auto;
   }
   .gib-terrain-toolbar button span {
     display: none;

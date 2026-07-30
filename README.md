@@ -28,15 +28,16 @@ The toolbar switches between this land partition and the underlying semantic poi
 
 ## Terrain laboratory
 
-Version 0.5 adds an isolated terrain laboratory for developing the atlas's visual language without involving vault data. Open it from the mountain ribbon icon, the command palette, or plugin settings.
+Version 0.6 provides an isolated terrain laboratory for developing the atlas's visual language without involving vault data. Open it from the mountain ribbon icon, the command palette, or plugin settings.
 
-- Draw peaks with a tap or click
-- Draw ridges and valleys by dragging
+- Draw sharp mountain ranges with a freehand ridge pen
+- Paint rolling elevation with signed raise and lower brushes
+- Adjust tool size and strength live
 - Generate deterministic variations with the shuffle control
 - Toggle cartographic contours
 - Undo or restore the demonstration geometry
 
-The renderer uses two browser-native WebGL passes: an editable procedural height field followed by relief shading, cast shadows, rock exposure, contours, grid ink, and surface texture. Interaction renders at a reduced internal resolution and automatically refines after input settles. The same renderer runs on desktop and mobile without a 3D mesh or external service.
+The renderer combines a high-resolution vector ridge texture with a separately painted continuous height field. Browser-native WebGL derives directional geological detail, sharp normals, curvature, cast shadows, rock exposure, analytic contours, grid ink, and restrained surface texture. Interaction renders at a reduced internal resolution and automatically refines up to 2048 pixels on desktop or 1024 pixels on mobile. No 3D mesh or external service is used.
 
 The model is downloaded once, then cached locally. Note text and embeddings are not sent to a service.
 

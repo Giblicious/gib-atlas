@@ -6,14 +6,14 @@ const { pipeline, env } = require('@huggingface/transformers');
 const { UMAP } = require('umap-js');
 const Graph = require('graphology');
 const louvain = require('graphology-communities-louvain');
-const { TERRAIN_VIEW_TYPE, TerrainLabView, DEFAULT_TERRAIN_GEOMETRY } = require('./terrain-lab');
+const { TERRAIN_VIEW_TYPE, TerrainLabView, DEFAULT_TERRAIN_PATHS } = require('./terrain-lab');
 
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const VIEW_TYPE = 'gib-atlas-view';
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const DEFAULT_SETTINGS = {
-  settingsVersion: 3,
+  settingsVersion: 4,
   folder: 'Atlas Demo',
   neighbors: 8,
   compactness: 0.12,
@@ -25,8 +25,11 @@ const DEFAULT_SETTINGS = {
   showRegionLabels: true,
   defaultPresentation: 'land',
   terrainSeed: 37,
-  terrainGeometry: DEFAULT_TERRAIN_GEOMETRY,
-  terrainContours: true
+  terrainPaths: DEFAULT_TERRAIN_PATHS,
+  terrainBrush: '',
+  terrainContours: true,
+  terrainToolSize: 44,
+  terrainToolStrength: 68
 };
 
 async function inflateEmbeddedBase64(encoded, text = false) {
@@ -956,7 +959,7 @@ class AtlasSettingTab extends PluginSettingTab {
       .setValue(this.plugin.settings.showRegionLabels)
       .onChange(async (value) => { this.plugin.settings.showRegionLabels = value; await this.plugin.saveSettings(); this.plugin.refreshViews(); }));
     containerEl.createEl('h3', { text: 'Terrain laboratory' });
-    new Setting(containerEl).setName('Open terrain laboratory').setDesc('Sculpt procedural peaks, ridges, and valleys independently from the semantic atlas.').addButton((button) => button
+    new Setting(containerEl).setName('Open terrain laboratory').setDesc('Draw sharp ridge paths and paint rolling elevation independently from the semantic atlas.').addButton((button) => button
       .setButtonText('Open').onClick(() => this.plugin.activateTerrainLab()));
     new Setting(containerEl).setName('Rebuild semantic plane').setDesc('Re-embed changed notes and recalculate the layout.').addButton((button) => {
       this.plugin.rebuildButton = button;
@@ -998,10 +1001,16 @@ module.exports = class GibAtlasPlugin extends Plugin {
     }
     if ((saved.settingsVersion || 1) < 3) {
       saved.terrainSeed = 37;
-      saved.terrainGeometry = JSON.parse(JSON.stringify(DEFAULT_TERRAIN_GEOMETRY));
       saved.terrainContours = true;
     }
-    saved.settingsVersion = 3;
+    if ((saved.settingsVersion || 1) < 4) {
+      saved.terrainPaths = JSON.parse(JSON.stringify(DEFAULT_TERRAIN_PATHS));
+      saved.terrainBrush = '';
+      saved.terrainToolSize = 44;
+      saved.terrainToolStrength = 68;
+      delete saved.terrainGeometry;
+    }
+    saved.settingsVersion = 4;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
     await this.saveData(this.settings);
   }
