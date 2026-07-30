@@ -26,9 +26,11 @@ precision highp float;
 in vec2 v_uv;
 out vec4 out_color;
 uniform sampler2D u_ridges;
+uniform sampler2D u_crests;
 uniform sampler2D u_brush;
 uniform vec2 u_source_texel;
 uniform float u_seed;
+uniform float u_pack_height;
 
 float hash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -64,32 +66,39 @@ float ridged(vec2 p) {
 }
 void main() {
   vec2 p = v_uv;
-  float ridge = texture(u_ridges, p).r;
+  float envelope = texture(u_ridges, p).r;
+  float crest_network = texture(u_crests, p).r;
   float brush = texture(u_brush, p).r * 2.0 - 1.0;
-  float ridge_left = texture(u_ridges, p - vec2(u_source_texel.x, 0.0)).r;
-  float ridge_right = texture(u_ridges, p + vec2(u_source_texel.x, 0.0)).r;
-  float ridge_down = texture(u_ridges, p - vec2(0.0, u_source_texel.y)).r;
-  float ridge_up = texture(u_ridges, p + vec2(0.0, u_source_texel.y)).r;
-  vec2 ridge_gradient = vec2(ridge_right - ridge_left, ridge_up - ridge_down);
-  vec2 ridge_normal = length(ridge_gradient) > 0.0002 ? normalize(ridge_gradient) : vec2(1.0, 0.0);
-  vec2 ridge_tangent = vec2(-ridge_normal.y, ridge_normal.x);
-
   vec2 seed_offset = vec2(u_seed * 0.013, u_seed * -0.009);
-  vec2 broad_warp = vec2(fbm(p * 1.8 + seed_offset), fbm(p * 1.8 + seed_offset + 27.4)) - 0.5;
-  vec2 shaped = p + broad_warp * 0.040;
-  float broad = fbm(shaped * 2.35 + seed_offset * 0.6) - 0.5;
-  float mountain_mask = smoothstep(0.035, 0.50, ridge);
+  vec2 broad_warp = vec2(fbm(p * 1.65 + seed_offset), fbm(p * 1.65 + seed_offset + 27.4)) - 0.5;
+  vec2 shaped = p + broad_warp * 0.030;
+  float continental = fbm(shaped * 2.10 + seed_offset * 0.6) - 0.5;
+  float mountain_mask = smoothstep(0.018, 0.34, envelope);
 
-  vec2 oriented = vec2(dot(p, ridge_tangent), dot(p, ridge_normal));
-  float folded_rock = ridged(oriented * vec2(15.0, 38.0) + seed_offset * 1.7);
-  float gullies = pow(1.0 - noise2(oriented * vec2(8.0, 62.0) + seed_offset * 2.4), 4.0);
-  float broken_crest = ridged(oriented * vec2(31.0, 12.0) + seed_offset * 3.2);
+  // Large forms come from the drawn range itself. Noise only articulates that
+  // form; it never creates a second, unrelated mountain field.
+  float macro = fbm(shaped * 4.2 + seed_offset * 1.4);
+  float middle = fbm(shaped * 10.5 + seed_offset * 2.8);
+  float fine = fbm(shaped * 25.0 + seed_offset * 5.1);
+  float broken_ridges = ridged(shaped * 8.0 + broad_warp * 0.45 + seed_offset * 2.0);
+  float crags = pow(ridged(shaped * 15.0 + broad_warp * 0.80 + seed_offset * 4.3), 1.65);
+  float drainage = pow(1.0 - fbm(shaped * 13.0 + seed_offset * 3.7), 3.4);
+  float peak_chain = smoothstep(0.30, 0.82, fbm(shaped * 5.4 + seed_offset * 3.1));
+  float massif = pow(max(envelope, 0.0), 0.92);
+  float spine = pow(max(crest_network, 0.0), 0.78);
 
-  float height_value = 0.335 + broad * 0.085 + brush * 0.39;
-  height_value += pow(ridge, 0.82) * 0.49;
-  height_value += mountain_mask * (folded_rock * 0.072 + broken_crest * 0.030 - gullies * 0.038);
-  height_value += (fbm(shaped * 13.0 + seed_offset * 2.1) - 0.5) * (0.008 + mountain_mask * 0.019);
-  out_color = vec4(vec3(clamp(height_value, 0.012, 0.988)), 1.0);
+  float height_value = 0.245 + continental * 0.050 + brush * 0.145;
+  height_value += massif * (0.175 + macro * 0.120 + middle * 0.040);
+  height_value += spine * (0.105 + peak_chain * 0.245 + macro * 0.045 + middle * 0.018);
+  height_value += mountain_mask * broken_ridges * 0.046;
+  height_value += mountain_mask * crags * (0.030 + spine * 0.025);
+  height_value += mountain_mask * (fine - 0.5) * 0.012;
+  height_value -= mountain_mask * drainage * (0.030 + massif * 0.020);
+  height_value = clamp(height_value, 0.012, 0.988);
+  if (u_pack_height > 0.5) {
+    float encoded = floor(height_value * 65535.0 + 0.5);
+    out_color = vec4(floor(encoded / 256.0) / 255.0, mod(encoded, 256.0) / 255.0, 0.0, 1.0);
+  } else out_color = vec4(vec3(height_value), 1.0);
 }`;
 
 const RELIEF_SHADER = `#version 300 es
@@ -100,8 +109,27 @@ uniform sampler2D u_height;
 uniform vec2 u_texel;
 uniform float u_seed;
 uniform float u_contours;
+uniform float u_packed_height;
 
-float height_at(vec2 uv) { return texture(u_height, clamp(uv, u_texel, 1.0 - u_texel)).r; }
+float decode_height(vec4 sample_value) {
+  if (u_packed_height < 0.5) return sample_value.r;
+  return (floor(sample_value.r * 255.0 + 0.5) * 256.0 + floor(sample_value.g * 255.0 + 0.5)) / 65535.0;
+}
+float height_at(vec2 uv) {
+  uv = clamp(uv, u_texel, 1.0 - u_texel);
+  if (u_packed_height < 0.5) return texture(u_height, uv).r;
+  vec2 texture_size = 1.0 / u_texel;
+  vec2 position = uv * texture_size - 0.5;
+  vec2 base = floor(position);
+  vec2 blend_value = fract(position);
+  vec2 uv00 = (base + vec2(0.5, 0.5)) * u_texel;
+  vec2 uv10 = (base + vec2(1.5, 0.5)) * u_texel;
+  vec2 uv01 = (base + vec2(0.5, 1.5)) * u_texel;
+  vec2 uv11 = (base + vec2(1.5, 1.5)) * u_texel;
+  float low = mix(decode_height(texture(u_height, uv00)), decode_height(texture(u_height, uv10)), blend_value.x);
+  float high = mix(decode_height(texture(u_height, uv01)), decode_height(texture(u_height, uv11)), blend_value.x);
+  return mix(low, high, blend_value.y);
+}
 float hash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
   p += dot(p, p + 45.32 + u_seed * 0.017);
@@ -123,52 +151,33 @@ vec3 terrain_palette(float h, float rock, float shadow) {
 void main() {
   float h = height_at(v_uv);
   vec2 one = u_texel;
-  vec2 three = u_texel * 3.0;
-  vec2 fine_gradient = vec2(height_at(v_uv + vec2(one.x, 0.0)) - height_at(v_uv - vec2(one.x, 0.0)),
-                            height_at(v_uv + vec2(0.0, one.y)) - height_at(v_uv - vec2(0.0, one.y)));
-  vec2 broad_gradient = vec2(height_at(v_uv + vec2(three.x, 0.0)) - height_at(v_uv - vec2(three.x, 0.0)),
-                             height_at(v_uv + vec2(0.0, three.y)) - height_at(v_uv - vec2(0.0, three.y))) / 3.0;
-  vec2 gradient = fine_gradient * 0.78 + broad_gradient * 0.22;
+  vec2 two = u_texel * 2.0;
+  vec2 gradient = vec2(height_at(v_uv + vec2(two.x, 0.0)) - height_at(v_uv - vec2(two.x, 0.0)),
+                       height_at(v_uv + vec2(0.0, two.y)) - height_at(v_uv - vec2(0.0, two.y))) * 0.5;
   vec3 normal = normalize(vec3(-gradient.x * 58.0, -gradient.y * 58.0, 1.0));
-  vec3 light = normalize(vec3(-0.64, 0.69, 0.40));
+  vec3 light = normalize(vec3(-0.60, 0.67, 0.37));
   float diffuse = max(0.0, dot(normal, light));
   float slope = 1.0 - normal.z;
   float neighbor_mean = (height_at(v_uv + vec2(one.x, 0.0)) + height_at(v_uv - vec2(one.x, 0.0)) + height_at(v_uv + vec2(0.0, one.y)) + height_at(v_uv - vec2(0.0, one.y))) * 0.25;
   float curvature = h - neighbor_mean;
-  float rock = smoothstep(0.055, 0.44, slope + abs(curvature) * 26.0) * smoothstep(0.26, 0.68, h);
+  float rock = smoothstep(0.070, 0.46, slope + abs(curvature) * 11.0) * smoothstep(0.28, 0.70, h);
 
-  float cast_shadow = 0.0;
-  vec2 ray = normalize(light.xy) * u_texel * 2.15;
-  for (int step_index = 1; step_index <= 13; step_index++) {
-    float step_value = float(step_index);
-    float sample_h = height_at(v_uv + ray * step_value);
-    float clearance = h + light.z * 0.0035 * step_value;
-    cast_shadow += smoothstep(clearance + 0.003, clearance + 0.016, sample_h) * (1.0 - step_value / 15.0);
-  }
-  cast_shadow = clamp(cast_shadow * 0.155, 0.0, 0.78);
-
-  float occlusion = 0.0;
-  occlusion += max(0.0, height_at(v_uv + u_texel * vec2(4.0, 2.0)) - h);
-  occlusion += max(0.0, height_at(v_uv + u_texel * vec2(-4.0, 2.0)) - h);
-  occlusion += max(0.0, height_at(v_uv + u_texel * vec2(2.0, -4.0)) - h);
-  occlusion += max(0.0, height_at(v_uv + u_texel * vec2(-2.0, -4.0)) - h);
-  occlusion = clamp(occlusion * 5.8, 0.0, 0.48);
-
-  vec3 color = terrain_palette(h, rock, cast_shadow);
-  color *= (0.40 + diffuse * 0.82) * (1.0 - cast_shadow) * (1.0 - occlusion);
+  float ambient_occlusion = smoothstep(-0.010, 0.025, curvature) * 0.10;
+  vec3 color = terrain_palette(h, rock, 0.0);
+  color *= (0.34 + diffuse * 0.94) * (1.0 - ambient_occlusion);
   float rim = pow(max(0.0, dot(normal, normalize(vec3(0.52, -0.48, 0.70)))), 11.0);
   color += vec3(0.15, 0.125, 0.082) * rim;
 
-  float minor_value = h * 49.0;
+  float minor_value = h * 54.0;
   float minor_distance = abs(fract(minor_value) - 0.5);
-  float minor_width = max(fwidth(minor_value) * 0.50, 0.020);
+  float minor_width = max(fwidth(minor_value) * 0.38, 0.014);
   float minor = 1.0 - smoothstep(minor_width, minor_width * 1.55, minor_distance);
-  float major_value = h * 9.8;
+  float major_value = h * 9.0;
   float major_distance = abs(fract(major_value) - 0.5);
-  float major_width = max(fwidth(major_value) * 0.48, 0.018);
+  float major_width = max(fwidth(major_value) * 0.40, 0.014);
   float major = 1.0 - smoothstep(major_width, major_width * 1.48, major_distance);
-  color = mix(color, vec3(0.19, 0.145, 0.095), minor * 0.38 * u_contours);
-  color = mix(color, vec3(0.115, 0.085, 0.060), major * 0.58 * u_contours);
+  color = mix(color, vec3(0.19, 0.145, 0.095), minor * 0.11 * u_contours);
+  color = mix(color, vec3(0.115, 0.085, 0.060), major * 0.24 * u_contours);
 
   vec2 grid_uv = v_uv * vec2(12.0, 8.0);
   vec2 grid_distance = abs(fract(grid_uv) - 0.5);
@@ -203,6 +212,79 @@ function createProgram(gl, fragmentSource) {
 
 function clonePaths(paths) { return JSON.parse(JSON.stringify(paths)); }
 
+function mulberry32(seed) {
+  return () => {
+    let value = seed += 0x6D2B79F5;
+    value = Math.imul(value ^ value >>> 15, value | 1);
+    value ^= value + Math.imul(value ^ value >>> 7, value | 61);
+    return ((value ^ value >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function resamplePath(points, spacing = 0.018) {
+  if (!points?.length) return [];
+  const aspect = BRUSH_WIDTH / BRUSH_HEIGHT;
+  const sampled = [points[0].slice()];
+  for (let index = 1; index < points.length; index++) {
+    const a = points[index - 1], b = points[index];
+    const distance = Math.hypot((b[0] - a[0]) * aspect, b[1] - a[1]);
+    const steps = Math.max(1, Math.ceil(distance / spacing));
+    for (let step = 1; step <= steps; step++) {
+      const t = step / steps;
+      sampled.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+  return sampled;
+}
+
+function buildRidgeNetwork(paths, seed) {
+  const random = mulberry32((seed || 1) >>> 0);
+  const main = paths.map((path) => ({ ...path, points: resamplePath(path.points) }));
+  const branches = [];
+  const aspect = BRUSH_WIDTH / BRUSH_HEIGHT;
+  for (const path of main) {
+    const points = path.points;
+    if (points.length < 5) continue;
+    let index = 3 + Math.floor(random() * 3);
+    let side = random() < 0.5 ? -1 : 1;
+    while (index < points.length - 3) {
+      const previous = points[index - 2], current = points[index], next = points[index + 2];
+      let tx = (next[0] - previous[0]) * aspect, ty = next[1] - previous[1];
+      const tangentLength = Math.hypot(tx, ty) || 1;
+      tx /= tangentLength; ty /= tangentLength;
+      const nx = -ty / aspect, ny = tx;
+      const tangentX = tx / aspect, tangentY = ty;
+      const length = path.width * (2.1 + random() * 2.6);
+      const sweep = (random() - 0.5) * 0.72;
+      const directionX = nx * side + tangentX * sweep;
+      const directionY = ny * side + tangentY * sweep;
+      const directionLength = Math.hypot(directionX * aspect, directionY) || 1;
+      const dirX = directionX / directionLength;
+      const dirY = directionY / directionLength;
+      const bend = (random() - 0.5) * length * 0.42;
+      const steps = 5 + Math.floor(random() * 4);
+      const branchPoints = [];
+      for (let step = 0; step <= steps; step++) {
+        const t = step / steps;
+        const taperCurve = Math.sin(t * Math.PI) * t;
+        const wander = (random() - 0.5) * length * 0.07 * t;
+        branchPoints.push([
+          Math.max(0, Math.min(1, current[0] + dirX * length * t + tangentX * bend * taperCurve + nx * wander)),
+          Math.max(0, Math.min(1, current[1] + dirY * length * t + tangentY * bend * taperCurve + ny * wander))
+        ]);
+      }
+      branches.push({
+        points: branchPoints,
+        width: path.width * (0.28 + random() * 0.30),
+        strength: path.strength * (0.34 + random() * 0.34)
+      });
+      side *= random() < 0.76 ? -1 : 1;
+      index += 11 + Math.floor(random() * 7);
+    }
+  }
+  return { main, branches };
+}
+
 function stampField(field, nx, ny, radius, strength) {
   const minX = Math.max(0, Math.floor((nx - radius / (BRUSH_WIDTH / BRUSH_HEIGHT)) * BRUSH_WIDTH));
   const maxX = Math.min(BRUSH_WIDTH - 1, Math.ceil((nx + radius / (BRUSH_WIDTH / BRUSH_HEIGHT)) * BRUSH_WIDTH));
@@ -222,14 +304,7 @@ function stampField(field, nx, ny, radius, strength) {
 }
 
 function defaultBrushData() {
-  const field = new Float32Array(BRUSH_WIDTH * BRUSH_HEIGHT);
-  stampField(field, 0.18, 0.64, 0.31, 0.34);
-  stampField(field, 0.42, 0.46, 0.28, 0.28);
-  stampField(field, 0.73, 0.37, 0.32, 0.32);
-  stampField(field, 0.58, 0.78, 0.25, 0.20);
-  stampField(field, 0.48, 0.66, 0.13, -0.34);
-  stampField(field, 0.30, 0.54, 0.10, -0.24);
-  return field;
+  return new Float32Array(BRUSH_WIDTH * BRUSH_HEIGHT);
 }
 
 function encodeBrush(field) {
@@ -269,7 +344,10 @@ class TerrainRenderer {
     this.floatTarget = Boolean(gl.getExtension('EXT_color_buffer_float')) && this.floatLinear;
     this.ridgeCanvas = document.createElement('canvas');
     this.ridgeContext = this.ridgeCanvas.getContext('2d');
+    this.crestCanvas = document.createElement('canvas');
+    this.crestContext = this.crestCanvas.getContext('2d');
     this.ridgeTexture = gl.createTexture();
+    this.crestTexture = gl.createTexture();
     this.brushTexture = gl.createTexture();
     this.heightTexture = null;
     this.framebuffer = null;
@@ -279,7 +357,7 @@ class TerrainRenderer {
   }
   destroy() {
     const gl = this.gl;
-    for (const texture of [this.ridgeTexture, this.brushTexture, this.heightTexture]) if (texture) gl.deleteTexture(texture);
+    for (const texture of [this.ridgeTexture, this.crestTexture, this.brushTexture, this.heightTexture]) if (texture) gl.deleteTexture(texture);
     if (this.framebuffer) gl.deleteFramebuffer(this.framebuffer);
     if (this.buffer) gl.deleteBuffer(this.buffer);
     if (this.heightProgram) gl.deleteProgram(this.heightProgram);
@@ -313,12 +391,12 @@ class TerrainRenderer {
     const allocate = (floating) => {
       this.heightTexture = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, this.heightTexture);
-      const filter = floating && !this.floatLinear ? gl.NEAREST : gl.LINEAR;
+      const filter = floating ? gl.LINEAR : gl.NEAREST;
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      if (floating) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, width, height, 0, gl.RGBA, gl.HALF_FLOAT, null);
+      if (floating) gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, width, height, 0, gl.RED, gl.FLOAT, null);
       else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       this.framebuffer = gl.createFramebuffer();
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
@@ -350,40 +428,55 @@ class TerrainRenderer {
     }
     context.stroke();
   }
-  updateRidgeTexture(paths, width, height) {
-    const gl = this.gl;
-    if (this.ridgeCanvas.width !== width || this.ridgeCanvas.height !== height) {
-      this.ridgeCanvas.width = width;
-      this.ridgeCanvas.height = height;
-    }
-    const context = this.ridgeContext;
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.globalCompositeOperation = 'source-over';
-    context.fillStyle = '#000';
-    context.fillRect(0, 0, width, height);
-    context.lineCap = 'round';
-    context.lineJoin = 'round';
-    context.globalCompositeOperation = 'lighter';
+  strokePaths(context, paths, width, height, widthScale, alpha, blurScale = 0) {
     const scale = Math.min(width, height);
     for (const path of paths) {
-      const base = Math.max(1.2, path.width * scale);
-      const strength = Math.max(0.15, Math.min(1, path.strength));
-      for (const layer of [[5.2, 0.16], [3.0, 0.25], [1.55, 0.40], [0.62, 0.78], [0.19, 1.0]]) {
-        const value = Math.round(255 * strength * layer[1]);
-        context.strokeStyle = `rgb(${value},${value},${value})`;
-        context.lineWidth = Math.max(1, base * layer[0]);
-        this.drawSpline(context, path.points, width, height);
-      }
+      const base = Math.max(1.0, path.width * scale);
+      const strength = Math.max(0.08, Math.min(1, path.strength));
+      context.filter = blurScale ? `blur(${Math.max(0.5, base * blurScale)}px)` : 'none';
+      context.strokeStyle = `rgba(255,255,255,${Math.min(1, strength * alpha)})`;
+      context.lineWidth = Math.max(0.8, base * widthScale);
+      this.drawSpline(context, path.points, width, height);
     }
-    context.globalCompositeOperation = 'source-over';
-    gl.bindTexture(gl.TEXTURE_2D, this.ridgeTexture);
+    context.filter = 'none';
+  }
+  uploadCanvasTexture(texture, canvas) {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, this.ridgeCanvas);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  }
+  updateRidgeTexture(paths, width, height, seed) {
+    if (this.ridgeCanvas.width !== width || this.ridgeCanvas.height !== height) {
+      this.ridgeCanvas.width = width;
+      this.ridgeCanvas.height = height;
+      this.crestCanvas.width = width;
+      this.crestCanvas.height = height;
+    }
+    for (const context of [this.ridgeContext, this.crestContext]) {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.globalCompositeOperation = 'source-over';
+      context.filter = 'none';
+      context.fillStyle = '#000';
+      context.fillRect(0, 0, width, height);
+      context.lineCap = 'round';
+      context.lineJoin = 'round';
+      context.globalCompositeOperation = 'lighter';
+    }
+    const network = buildRidgeNetwork(paths, seed);
+    this.strokePaths(this.ridgeContext, network.main, width, height, 3.6, 0.76, 0.82);
+    this.strokePaths(this.ridgeContext, network.branches, width, height, 2.3, 0.34, 0.70);
+    this.strokePaths(this.crestContext, network.main, width, height, 0.72, 0.82, 0.46);
+    this.strokePaths(this.crestContext, network.branches, width, height, 0.56, 0.30, 0.42);
+    this.ridgeContext.globalCompositeOperation = 'source-over';
+    this.crestContext.globalCompositeOperation = 'source-over';
+    this.uploadCanvasTexture(this.ridgeTexture, this.ridgeCanvas);
+    this.uploadCanvasTexture(this.crestTexture, this.crestCanvas);
   }
   updateBrushTexture(field, revision) {
     if (revision === this.brushRevision) return;
@@ -405,10 +498,14 @@ class TerrainRenderer {
   render(paths, field, brushRevision, seed, quality, contours) {
     const gl = this.gl;
     const aspect = Math.max(0.5, this.canvas.width / Math.max(1, this.canvas.height));
-    const targetWidth = quality === 'draft' ? (this.mobile ? 512 : 768) : (this.mobile ? 1024 : 2048);
+    const draftMaximum = this.mobile ? 720 : 1200;
+    const finalMaximum = this.mobile ? 2048 : 4096;
+    const targetWidth = quality === 'draft'
+      ? Math.max(512, Math.min(draftMaximum, Math.round(this.canvas.width * 0.55)))
+      : Math.max(1024, Math.min(finalMaximum, this.canvas.width));
     const targetHeight = Math.max(256, Math.round(targetWidth / aspect));
     this.ensureHeightTarget(targetWidth, targetHeight);
-    this.updateRidgeTexture(paths, targetWidth, targetHeight);
+    this.updateRidgeTexture(paths, targetWidth, targetHeight, seed);
     this.updateBrushTexture(field, brushRevision);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
@@ -418,10 +515,14 @@ class TerrainRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.ridgeTexture);
     gl.uniform1i(gl.getUniformLocation(this.heightProgram, 'u_ridges'), 0);
     gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.crestTexture);
+    gl.uniform1i(gl.getUniformLocation(this.heightProgram, 'u_crests'), 1);
+    gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.brushTexture);
-    gl.uniform1i(gl.getUniformLocation(this.heightProgram, 'u_brush'), 1);
+    gl.uniform1i(gl.getUniformLocation(this.heightProgram, 'u_brush'), 2);
     gl.uniform2f(gl.getUniformLocation(this.heightProgram, 'u_source_texel'), 1 / targetWidth, 1 / targetHeight);
     gl.uniform1f(gl.getUniformLocation(this.heightProgram, 'u_seed'), seed);
+    gl.uniform1f(gl.getUniformLocation(this.heightProgram, 'u_pack_height'), this.floatTarget ? 0 : 1);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -433,6 +534,7 @@ class TerrainRenderer {
     gl.uniform2f(gl.getUniformLocation(this.reliefProgram, 'u_texel'), 1 / targetWidth, 1 / targetHeight);
     gl.uniform1f(gl.getUniformLocation(this.reliefProgram, 'u_seed'), seed);
     gl.uniform1f(gl.getUniformLocation(this.reliefProgram, 'u_contours'), contours ? 1 : 0);
+    gl.uniform1f(gl.getUniformLocation(this.reliefProgram, 'u_packed_height'), this.floatTarget ? 0 : 1);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 }
