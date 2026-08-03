@@ -1,9 +1,9 @@
 {
   "id": "gib-atlas",
   "name": "Gib Atlas",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "minAppVersion": "1.4.5",
-  "description": "An experimental local semantic atlas for Obsidian.",
+  "description": "A local semantic search and multidimensional writing atlas for Obsidian.",
   "author": "Giblicious",
   "isDesktopOnly": false
 }

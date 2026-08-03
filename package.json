@@ -1,18 +1,18 @@
 {
   "name": "gib-atlas",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "node scripts/check.mjs && node scripts/check-terrain.mjs"
+    "check": "node scripts/check.mjs"
   },
   "devDependencies": {
     "@huggingface/transformers": "^3.8.1",
-    "esbuild": "^0.25.12",
-    "graphology": "^0.26.0",
-    "graphology-communities-louvain": "^2.0.2",
-    "umap-js": "^1.4.0"
+    "esbuild": "^0.25.12"
+  },
+  "dependencies": {
+    "compromise": "14.16.0"
   },
   "overrides": {
     "sharp": "^0.35.0"
