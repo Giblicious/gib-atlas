@@ -47,3 +47,4 @@
 .gib-atlas-map-detail-analysis{margin-top:3px;color:var(--text-normal);font-size:var(--font-ui-smaller);font-weight:600}
 .gib-atlas-map-detail-evidence{display:-webkit-box;margin-top:3px;overflow:hidden;color:var(--text-muted);font-size:var(--font-ui-smaller);line-height:1.35;-webkit-box-orient:vertical;-webkit-line-clamp:2}
 @media(max-width:700px){.gib-atlas-modal .prompt-input-container input{padding-right:104px}.gib-atlas-modal .gib-atlas-lens-select,.gib-atlas-modal .gib-atlas-dimension-select{display:none}}
+.gib-atlas-color-key-dot{width:11px;height:4px;border-radius:999px;box-shadow:0 0 0 1px color-mix(in srgb,hsl(var(--gib-key-hue) 58% 64%) 22%,transparent)}

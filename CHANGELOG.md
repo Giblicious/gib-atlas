@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.4
+
+- Adds a faint radial compass boundary to the dedicated atlas view.
+- Adds perspective-aware colored arcs aligned with each analytical direction.
+- Scales arc prominence from the qualities present in the visible notes while keeping the map visually restrained.
+
 ## 0.6.3
 
 - Organizes full-vault Emotion, Purpose, Form, and Position views radially around their pure category endpoints.
