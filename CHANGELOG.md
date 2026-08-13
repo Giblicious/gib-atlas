@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.6
+
+- Labels Meaning compass sectors from actual semantic topic communities instead of generic directions.
+- Groups the Emotion compass into six readable families with click-through detail for individual emotions.
+- Removes global graph rotation and replaces orbiting with subtle independent breathing motion.
+- Tightens visual refresh timing so terrain, communities, nodes, and compass feedback update more cohesively.
+
 ## 0.6.5
 
 - Gives Emotion, Purpose, Form, Position, and Meaning distinct spatial compass grammars.
