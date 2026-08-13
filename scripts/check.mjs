@@ -18,16 +18,16 @@ if (versions[manifest.version] !== manifest.minAppVersion) throw new Error('vers
 if (manifest.isDesktopOnly !== false) throw new Error('Gib Atlas must remain mobile-compatible');
 
 const source = read('src/main.js'), runtime = read('src/mobile-runtime.js'), styles = read('styles.css'), bundle = read('main.js');
-for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect', 'atlasProfilePolar', 'atlasProfileAngle', 'EMOTION_FAMILIES', 'atlasCompassSegments', 'communityFallbackLabel', 'atlasCompassGeometry', 'drawPerspectiveCompass', 'paintSemanticColonies', 'colonyBridgePlan', 'validMapVisualization', 'ambientAngle() { return 0; }', 'gib-atlas-compass-context', 'renderColorKey']) {
+for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect', 'atlasProfilePolar', 'atlasProfileAngle', 'EMOTION_FAMILIES', 'atlasCompassSegments', 'communityFallbackLabel', 'atlasCompassGeometry', 'drawPerspectiveCompass', 'paintSemanticHotspots', 'hotspotMotionTarget', 'ambientAngle() { return 0; }', 'gib-atlas-compass-context', 'renderColorKey']) {
   if (!source.includes(marker)) throw new Error(`Graph source is missing ${marker}`);
 }
 for (const marker of ['semanticHotspotAnalysis', 'hotspots-v1', 'hotspotRole', 'hotspotAffinities', "node.hotspotRole === 'bridge'"]) {
   if (!runtime.includes(marker) && !source.includes(marker) && !bundle.includes(marker)) throw new Error(`Semantic hotspot system is missing ${marker}`);
 }
-for (const marker of ['paintSemanticColonies', 'colonyBridgePlan', 'gib-atlas-map-colonies']) {
+for (const marker of ['paintSemanticHotspots', 'hotspotMotionTarget', 'gib-atlas-map-hotspots']) {
   if (!bundle.includes(marker)) throw new Error(`Built plugin is missing ${marker}`);
 }
-for (const removed of ['paintSemanticFabric', 'fabricTriangulation', 'gib-atlas-map-fabric', 'paintSemanticMycelium', 'buildMyceliumSkeleton', 'gib-atlas-map-mycelium']) {
+for (const removed of ['paintSemanticFabric', 'fabricTriangulation', 'gib-atlas-map-fabric', 'paintSemanticMycelium', 'buildMyceliumSkeleton', 'gib-atlas-map-mycelium', 'paintSemanticColonies', 'colonyBridgePlan', 'gib-atlas-map-colonies', 'gib-atlas-map-mode', 'gib-atlas-map-visualization', 'Default map grouping', 'Default visualization']) {
   if (source.includes(removed) || bundle.includes(removed) || styles.includes(removed)) throw new Error(`Removed graph renderer remains in the release: ${removed}`);
 }
 for (const marker of [
@@ -47,7 +47,7 @@ for (const signal of ['semantic', 'emotion', 'purpose', 'form', 'position']) {
   if (!TEXT_SIGNALS[signal]) throw new Error(`Missing ${signal} signal`);
 }
 if (TEXT_SIGNAL_PROFILES.emotion.length < 20 || TEXT_SIGNAL_PROFILES.purpose.length < 6 || TEXT_SIGNAL_PROFILES.form.length < 5 || TEXT_SIGNAL_PROFILES.position.length < 5) throw new Error('Writing-quality profiles are incomplete');
-for (const marker of ['gib-atlas-dimension-select', 'gib-atlas-map-detail-analysis', 'gib-atlas-map-stage', 'gib-atlas-map-visualization', 'gib-atlas-map-colonies', 'gib-atlas-color-key']) {
+for (const marker of ['gib-atlas-dimension-select', 'gib-atlas-map-detail-analysis', 'gib-atlas-map-stage', 'gib-atlas-map-hotspots', 'gib-atlas-color-key']) {
   if (!styles.includes(marker)) throw new Error(`Styles are missing ${marker}`);
 }
 for (const forbidden of ['gib-search', 'Terrain laboratory', 'gib-atlas-terrain-lab', 'Ridge pen', 'buildLandPartition']) {

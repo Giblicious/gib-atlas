@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.13
+
+- Replace the leftover Semantic Colonies presentation with hotspot systems.
+- Place every hotspot member in a visible orbital structure around its epicenter.
+- Give bridge notes live, weighted trajectories between multiple hotspots.
+- Add persistent low-speed orbital motion while preserving collision avoidance and semantic placement.
+- Remove the obsolete grouping and visualization controls from the map and plugin settings.
+- Replace neighborhood boundary tuning with hotspot spread, gravity, motion, and bridge controls.
+
 ## 0.6.12
 
 - Replace fixed visual groupings with statistically differentiated semantic hotspots.
