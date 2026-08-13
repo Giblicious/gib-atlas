@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.5
+
+- Gives Emotion, Purpose, Form, Position, and Meaning distinct spatial compass grammars.
+- Replaces the color-wheel frame with restrained broken boundaries, analytical sectors, districts, fields, and axes.
+- Adds perimeter labels, a center context marker, a compact geometry legend, and interactive arc readouts.
+- Makes weak or absent qualities recede so each compass reflects the visible notes.
+
 ## 0.6.4
 
 - Adds a faint radial compass boundary to the dedicated atlas view.
