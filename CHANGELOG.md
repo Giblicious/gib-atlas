@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.12
+
+- Replace fixed visual groupings with statistically differentiated semantic hotspots.
+- Detect persistent local density peaks without requesting an arbitrary number of hubs.
+- Classify notes as epicenters, members, satellites, bridges, or outliers using multi-hotspot affinity margins.
+- Let hotspot gravity shape the vault layout while retaining the underlying semantic projection and fluid physics.
+- Expose hotspot roles on hover and visually distinguish epicenters and cross-hotspot bridge notes.
+
 ## 0.6.11
 
 - Replace the line-heavy Semantic Mycelium view with readable Semantic Colonies.

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { TEXT_SIGNAL_PROFILES, TEXT_SIGNALS } from '../src/text-signals.js';
-import { MobileSearchRuntime } from '../src/mobile-runtime.js';
+import { MobileSearchRuntime, semanticHotspotAnalysis } from '../src/mobile-runtime.js';
 
 const root = new URL('../', import.meta.url);
 const read = file => fs.readFileSync(new URL(file, root), 'utf8');
@@ -20,6 +20,9 @@ if (manifest.isDesktopOnly !== false) throw new Error('Gib Atlas must remain mob
 const source = read('src/main.js'), runtime = read('src/mobile-runtime.js'), styles = read('styles.css'), bundle = read('main.js');
 for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect', 'atlasProfilePolar', 'atlasProfileAngle', 'EMOTION_FAMILIES', 'atlasCompassSegments', 'communityFallbackLabel', 'atlasCompassGeometry', 'drawPerspectiveCompass', 'paintSemanticColonies', 'colonyBridgePlan', 'validMapVisualization', 'ambientAngle() { return 0; }', 'gib-atlas-compass-context', 'renderColorKey']) {
   if (!source.includes(marker)) throw new Error(`Graph source is missing ${marker}`);
+}
+for (const marker of ['semanticHotspotAnalysis', 'hotspots-v1', 'hotspotRole', 'hotspotAffinities', "node.hotspotRole === 'bridge'"]) {
+  if (!runtime.includes(marker) && !source.includes(marker) && !bundle.includes(marker)) throw new Error(`Semantic hotspot system is missing ${marker}`);
 }
 for (const marker of ['paintSemanticColonies', 'colonyBridgePlan', 'gib-atlas-map-colonies']) {
   if (!bundle.includes(marker)) throw new Error(`Built plugin is missing ${marker}`);
@@ -58,6 +61,16 @@ const vectors = new Map([
   ['b.md', normalizedVector([[0, .72], [2, .69]])],
   ['c.md', normalizedVector([[0, .45], [1, -.89]])],
 ]);
+const hotspotEntries = [
+  ['prayer-a', [[0, .99], [1, .08]]], ['prayer-b', [[0, .97], [1, .14]]], ['prayer-c', [[0, .94], [1, .2]]],
+  ['agency-a', [[0, -.12], [1, .99]]], ['agency-b', [[0, -.05], [1, .998]]], ['agency-c', [[0, .03], [1, .999]]],
+  ['bridge', [[0, .7], [1, .714]]], ['outlier', [[2, 1]]],
+].map(([id, values]) => ({ id: `${id}.md`, vector: normalizedVector(values) }));
+const hotspotEdges = []; for (let first = 0; first < hotspotEntries.length; first++) for (let second = first + 1; second < hotspotEntries.length; second++) hotspotEdges.push({ source: hotspotEntries[first].id, target: hotspotEntries[second].id, score: hotspotEntries[first].vector.reduce((sum, value, index) => sum + value * hotspotEntries[second].vector[index], 0) });
+const hotspotAnalysis = semanticHotspotAnalysis(hotspotEntries, hotspotEdges, 2), hotspotRoles = new Map(hotspotAnalysis.assignments);
+if (hotspotAnalysis.hotspots.length !== 2) throw new Error(`Expected two statistically distinct semantic hotspots, got ${hotspotAnalysis.hotspots.length}`);
+if (hotspotRoles.get('bridge.md')?.role !== 'bridge') throw new Error('Hotspot detector failed to preserve a bridge note');
+if (hotspotRoles.get('outlier.md')?.role !== 'outlier') throw new Error('Hotspot detector failed to preserve an outlier');
 const runtimePlugin = { app: { vault: { adapter: { getBasePath: () => '/test' }, configDir: '.obsidian', getName: () => 'test' } }, manifest: { id: 'gib-atlas' }, settings: { mapTuning: {} }, isMobile: false };
 const testRuntime = new MobileSearchRuntime(runtimePlugin);
 testRuntime.fileVectors = files => new Map((files || [...vectors.keys()]).filter(file => vectors.has(file)).map(file => [file, { vector: vectors.get(file) }]));
