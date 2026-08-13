@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.16
+
+- Rebuild the vault overview as a flat semantic grid where every note owns one stable cell.
+- Preserve semantic neighborhood placement while eliminating overlap, force-layout ambiguity, and unused space.
+- Encode local semantic density through cell brightness and restrained glow so concentrations become visible peaks.
+- Keep labels hidden until hover or selection, leaving the first layer quiet and readable.
+
 ## 0.6.15
 
 - Invalidate the prior orbital-hotspot cache so existing installations immediately rebuild the new centroid field.

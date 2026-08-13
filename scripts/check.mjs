@@ -18,7 +18,7 @@ if (versions[manifest.version] !== manifest.minAppVersion) throw new Error('vers
 if (manifest.isDesktopOnly !== false) throw new Error('Gib Atlas must remain mobile-compatible');
 
 const source = read('src/main.js'), runtime = read('src/mobile-runtime.js'), styles = read('styles.css'), bundle = read('main.js');
-for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect', 'atlasProfilePolar', 'atlasProfileAngle', 'EMOTION_FAMILIES', 'atlasCompassSegments', 'communityFallbackLabel', 'atlasCompassGeometry', 'drawPerspectiveCompass', 'paintSemanticRelations', 'ambientAngle() { return 0; }', 'gib-atlas-compass-context', 'renderColorKey']) {
+for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect', 'atlasProfilePolar', 'atlasProfileAngle', 'EMOTION_FAMILIES', 'atlasCompassSegments', 'communityFallbackLabel', 'atlasCompassGeometry', 'drawPerspectiveCompass', 'paintSemanticRelations', 'semanticGridLayout', 'drawSemanticGrid', 'hotspotDensity', 'ambientAngle() { return 0; }', 'gib-atlas-compass-context', 'renderColorKey']) {
   if (!source.includes(marker)) throw new Error(`Graph source is missing ${marker}`);
 }
 for (const marker of ['semanticHotspotAnalysis', 'centroid-hubs-v2', 'hotspotRole', 'hotspotAffinities', "node.hotspotRole === 'bridge'"]) {
