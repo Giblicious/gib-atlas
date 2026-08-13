@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.7
+
+- Separates physics updates from display rendering so expensive simulation can run at a controlled rate while motion renders every animation frame.
+- Interpolates node and camera positions between simulation states to remove stepped movement and camera jolts.
+- Keeps terrain and semantic analysis on their existing lower-frequency paths instead of coupling them to visual frame rate.
+
 ## 0.6.6
 
 - Labels Meaning compass sectors from actual semantic topic communities instead of generic directions.
