@@ -21,7 +21,7 @@ const source = read('src/main.js'), runtime = read('src/mobile-runtime.js'), sty
 for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect', 'atlasProfilePolar', 'atlasProfileAngle', 'EMOTION_FAMILIES', 'atlasCompassSegments', 'communityFallbackLabel', 'atlasCompassGeometry', 'drawPerspectiveCompass', 'paintSemanticRelations', 'ambientAngle() { return 0; }', 'gib-atlas-compass-context', 'renderColorKey']) {
   if (!source.includes(marker)) throw new Error(`Graph source is missing ${marker}`);
 }
-for (const marker of ['semanticHotspotAnalysis', 'hotspots-v1', 'hotspotRole', 'hotspotAffinities', "node.hotspotRole === 'bridge'"]) {
+for (const marker of ['semanticHotspotAnalysis', 'centroid-hubs-v2', 'hotspotRole', 'hotspotAffinities', "node.hotspotRole === 'bridge'"]) {
   if (!runtime.includes(marker) && !source.includes(marker) && !bundle.includes(marker)) throw new Error(`Semantic hotspot system is missing ${marker}`);
 }
 for (const marker of ['paintSemanticRelations', 'hotspot:', 'gib-atlas-map-hotspots']) {

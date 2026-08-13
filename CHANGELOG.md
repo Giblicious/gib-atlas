@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.15
+
+- Invalidate the prior orbital-hotspot cache so existing installations immediately rebuild the new centroid field.
+
 ## 0.6.14
 
 - Replace visible-note epicenters with invisible semantic centroid anchors.
