@@ -9,7 +9,7 @@ Gib Atlas is a fully local semantic search and writing-map plugin for Obsidian. 
 - Semantic angle and note-to-note relationships for natural clustering
 - Optional Meaning, Emotion, Purpose, Form, and Position dimensions
 - Radial analytical perspectives with a dynamic pure-color endpoint key
-- Statistically detected semantic hotspots with epicenters, orbiting members, bridges, and outliers
+- Statistically detected semantic hubs with abstract centroids, bridge notes, and genuine outliers
 - A dedicated vault map, an optional search-popup map, and note neighborhoods
 - Semantic result highlighting and folder-aware ranking
 - Local indexes and cached analysis on desktop and mobile

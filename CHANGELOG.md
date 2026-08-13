@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.14
+
+- Replace visible-note epicenters with invisible semantic centroid anchors.
+- Remove orbit paths and rotating note systems that fought collision and layout forces.
+- Preserve local semantic shape inside each hub while positioning bridge notes by weighted multi-hub affinity.
+- Draw only measured note-to-note relationships for bridges and focused notes.
+- Replace orbital controls with concise hub separation, local cohesion, and bridge balance controls.
+
 ## 0.6.13
 
 - Replace the leftover Semantic Colonies presentation with hotspot systems.

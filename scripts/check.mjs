@@ -18,16 +18,16 @@ if (versions[manifest.version] !== manifest.minAppVersion) throw new Error('vers
 if (manifest.isDesktopOnly !== false) throw new Error('Gib Atlas must remain mobile-compatible');
 
 const source = read('src/main.js'), runtime = read('src/mobile-runtime.js'), styles = read('styles.css'), bundle = read('main.js');
-for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect', 'atlasProfilePolar', 'atlasProfileAngle', 'EMOTION_FAMILIES', 'atlasCompassSegments', 'communityFallbackLabel', 'atlasCompassGeometry', 'drawPerspectiveCompass', 'paintSemanticHotspots', 'hotspotMotionTarget', 'ambientAngle() { return 0; }', 'gib-atlas-compass-context', 'renderColorKey']) {
+for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect', 'atlasProfilePolar', 'atlasProfileAngle', 'EMOTION_FAMILIES', 'atlasCompassSegments', 'communityFallbackLabel', 'atlasCompassGeometry', 'drawPerspectiveCompass', 'paintSemanticRelations', 'ambientAngle() { return 0; }', 'gib-atlas-compass-context', 'renderColorKey']) {
   if (!source.includes(marker)) throw new Error(`Graph source is missing ${marker}`);
 }
 for (const marker of ['semanticHotspotAnalysis', 'hotspots-v1', 'hotspotRole', 'hotspotAffinities', "node.hotspotRole === 'bridge'"]) {
   if (!runtime.includes(marker) && !source.includes(marker) && !bundle.includes(marker)) throw new Error(`Semantic hotspot system is missing ${marker}`);
 }
-for (const marker of ['paintSemanticHotspots', 'hotspotMotionTarget', 'gib-atlas-map-hotspots']) {
+for (const marker of ['paintSemanticRelations', 'hotspot:', 'gib-atlas-map-hotspots']) {
   if (!bundle.includes(marker)) throw new Error(`Built plugin is missing ${marker}`);
 }
-for (const removed of ['paintSemanticFabric', 'fabricTriangulation', 'gib-atlas-map-fabric', 'paintSemanticMycelium', 'buildMyceliumSkeleton', 'gib-atlas-map-mycelium', 'paintSemanticColonies', 'colonyBridgePlan', 'gib-atlas-map-colonies', 'gib-atlas-map-mode', 'gib-atlas-map-visualization', 'Default map grouping', 'Default visualization']) {
+for (const removed of ['paintSemanticFabric', 'fabricTriangulation', 'gib-atlas-map-fabric', 'paintSemanticMycelium', 'buildMyceliumSkeleton', 'gib-atlas-map-mycelium', 'paintSemanticColonies', 'colonyBridgePlan', 'gib-atlas-map-colonies', 'gib-atlas-map-mode', 'gib-atlas-map-visualization', 'Default map grouping', 'Default visualization', 'hotspotMotionTarget', 'Orbital motion']) {
   if (source.includes(removed) || bundle.includes(removed) || styles.includes(removed)) throw new Error(`Removed graph renderer remains in the release: ${removed}`);
 }
 for (const marker of [
@@ -71,6 +71,8 @@ const hotspotAnalysis = semanticHotspotAnalysis(hotspotEntries, hotspotEdges, 2)
 if (hotspotAnalysis.hotspots.length !== 2) throw new Error(`Expected two statistically distinct semantic hotspots, got ${hotspotAnalysis.hotspots.length}`);
 if (hotspotRoles.get('bridge.md')?.role !== 'bridge') throw new Error('Hotspot detector failed to preserve a bridge note');
 if (hotspotRoles.get('outlier.md')?.role !== 'outlier') throw new Error('Hotspot detector failed to preserve an outlier');
+if (hotspotAnalysis.hotspots.some(hotspot => hotspotEntries.some(entry => entry.id === hotspot.id) || !hotspot.id.startsWith('hotspot:') || !hotspot.centroid?.length)) throw new Error('Semantic hubs must be abstract normalized centroids');
+if ([...hotspotRoles.values()].some(value => value.role === 'epicenter')) throw new Error('A visible note was incorrectly promoted to a semantic hub');
 const runtimePlugin = { app: { vault: { adapter: { getBasePath: () => '/test' }, configDir: '.obsidian', getName: () => 'test' } }, manifest: { id: 'gib-atlas' }, settings: { mapTuning: {} }, isMobile: false };
 const testRuntime = new MobileSearchRuntime(runtimePlugin);
 testRuntime.fileVectors = files => new Map((files || [...vectors.keys()]).filter(file => vectors.has(file)).map(file => [file, { vector: vectors.get(file) }]));
