@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.9
+
+- Replace the curved relationship overlay with a continuous deformable semantic mesh.
+- Treat notes, semantic neighborhoods, and active queries as structural knots in the same fabric.
+- Use semantic strength to control fiber density and weave emphasis rather than drawing independent relationship curves.
+- Add localized tension pulses on hover and subtle shared material motion while respecting reduced-motion preferences.
+- Render the fabric on a dedicated lightweight canvas layer for smoother animation on desktop and mobile.
+
 ## 0.6.8
 
 - Add Semantic Fabric as an alternate live visualization for the search and dedicated Atlas maps.
