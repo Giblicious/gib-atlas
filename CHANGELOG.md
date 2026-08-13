@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.11
+
+- Replace the line-heavy Semantic Mycelium view with readable Semantic Colonies.
+- Render related notes as softly filled organic bodies with nested boundaries and note nuclei.
+- Show only a few strong bridges between colonies, revealing note-level semantic and manual links on focus.
+- Throttle colony-field construction independently from the smooth display loop for better responsiveness.
+
 ## 0.6.10
 
 - Replace Semantic Fabric's triangle mesh with a branching Semantic Mycelium visualization.
