@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.10
+
+- Replace Semantic Fabric's triangle mesh with a branching Semantic Mycelium visualization.
+- Grow notes into local semantic root systems, then join neighborhoods through sparse shared trunks.
+- Treat an active query as a temporary nutrient root and animate propagation through the actual branch network.
+- Add tapered branches, fine hyphae, organic offshoots, and branch-aware hover signals without changing search ranking.
+- Cache the mycelium skeleton and reduce secondary detail on mobile for responsive continuous motion.
+
 ## 0.6.9
 
 - Replace the curved relationship overlay with a continuous deformable semantic mesh.

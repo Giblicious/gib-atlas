@@ -18,8 +18,14 @@ if (versions[manifest.version] !== manifest.minAppVersion) throw new Error('vers
 if (manifest.isDesktopOnly !== false) throw new Error('Gib Atlas must remain mobile-compatible');
 
 const source = read('src/main.js'), runtime = read('src/mobile-runtime.js'), styles = read('styles.css'), bundle = read('main.js');
-for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect', 'atlasProfilePolar', 'atlasProfileAngle', 'EMOTION_FAMILIES', 'atlasCompassSegments', 'communityFallbackLabel', 'atlasCompassGeometry', 'drawPerspectiveCompass', 'paintSemanticFabric', 'fabricTriangulation', 'validMapVisualization', 'ambientAngle() { return 0; }', 'gib-atlas-compass-context', 'renderColorKey']) {
+for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect', 'atlasProfilePolar', 'atlasProfileAngle', 'EMOTION_FAMILIES', 'atlasCompassSegments', 'communityFallbackLabel', 'atlasCompassGeometry', 'drawPerspectiveCompass', 'paintSemanticMycelium', 'buildMyceliumSkeleton', 'validMapVisualization', 'ambientAngle() { return 0; }', 'gib-atlas-compass-context', 'renderColorKey']) {
   if (!source.includes(marker)) throw new Error(`Graph source is missing ${marker}`);
+}
+for (const marker of ['paintSemanticMycelium', 'buildMyceliumSkeleton', 'gib-atlas-map-mycelium']) {
+  if (!bundle.includes(marker)) throw new Error(`Built plugin is missing ${marker}`);
+}
+for (const removed of ['paintSemanticFabric', 'fabricTriangulation', 'gib-atlas-map-fabric']) {
+  if (source.includes(removed) || bundle.includes(removed) || styles.includes(removed)) throw new Error(`Removed Fabric renderer remains in the release: ${removed}`);
 }
 for (const marker of [
   "queryRadius = .08 + (1 - relevance.get(entry.id)) * .72",
@@ -38,7 +44,7 @@ for (const signal of ['semantic', 'emotion', 'purpose', 'form', 'position']) {
   if (!TEXT_SIGNALS[signal]) throw new Error(`Missing ${signal} signal`);
 }
 if (TEXT_SIGNAL_PROFILES.emotion.length < 20 || TEXT_SIGNAL_PROFILES.purpose.length < 6 || TEXT_SIGNAL_PROFILES.form.length < 5 || TEXT_SIGNAL_PROFILES.position.length < 5) throw new Error('Writing-quality profiles are incomplete');
-for (const marker of ['gib-atlas-dimension-select', 'gib-atlas-map-detail-analysis', 'gib-atlas-map-stage', 'gib-atlas-map-visualization', 'gib-atlas-map-fabric', 'gib-atlas-color-key']) {
+for (const marker of ['gib-atlas-dimension-select', 'gib-atlas-map-detail-analysis', 'gib-atlas-map-stage', 'gib-atlas-map-visualization', 'gib-atlas-map-mycelium', 'gib-atlas-color-key']) {
   if (!styles.includes(marker)) throw new Error(`Styles are missing ${marker}`);
 }
 for (const forbidden of ['gib-search', 'Terrain laboratory', 'gib-atlas-terrain-lab', 'Ridge pen', 'buildLandPartition']) {
