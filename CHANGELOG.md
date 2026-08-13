@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.3
+
+- Organizes full-vault Emotion, Purpose, Form, and Position views radially around their pure category endpoints.
+- Uses distance from the center to express dimensional strength while angle and color express the active category mixture.
+- Adds a dynamic side color key whose dots identify the 100% category colors for the active perspective.
+
 ## 0.6.2
 
 - Rebuilt Gib Atlas on the responsive query-centered semantic map foundation.

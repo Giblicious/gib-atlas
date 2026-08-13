@@ -18,12 +18,12 @@ if (versions[manifest.version] !== manifest.minAppVersion) throw new Error('vers
 if (manifest.isDesktopOnly !== false) throw new Error('Gib Atlas must remain mobile-compatible');
 
 const source = read('src/main.js'), runtime = read('src/mobile-runtime.js'), styles = read('styles.css'), bundle = read('main.js');
-for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect']) {
+for (const marker of ['class LivingSemanticMapCanvas', 'buildQueryMapModel', 'beginQuery(query, true)', 'SemanticMapWebGLRenderer', 'atlasRelationshipField', 'configureAtlasDimensionSelect', 'atlasProfilePolar', 'renderColorKey']) {
   if (!source.includes(marker)) throw new Error(`Graph source is missing ${marker}`);
 }
 for (const marker of [
-  "radius = .08 + (1 - relevance.get(entry.id)) * .72",
-  'analyticalAngle = relationshipField',
+  "queryRadius = .08 + (1 - relevance.get(entry.id)) * .72",
+  'analyticalAngle = Number.isFinite',
   'async textSignalProfiles',
   'async indexingTurn()',
   'backgroundOnly = false',
@@ -38,7 +38,7 @@ for (const signal of ['semantic', 'emotion', 'purpose', 'form', 'position']) {
   if (!TEXT_SIGNALS[signal]) throw new Error(`Missing ${signal} signal`);
 }
 if (TEXT_SIGNAL_PROFILES.emotion.length < 20 || TEXT_SIGNAL_PROFILES.purpose.length < 6 || TEXT_SIGNAL_PROFILES.form.length < 5 || TEXT_SIGNAL_PROFILES.position.length < 5) throw new Error('Writing-quality profiles are incomplete');
-for (const marker of ['gib-atlas-dimension-select', 'gib-atlas-map-detail-analysis', 'gib-atlas-map-stage']) {
+for (const marker of ['gib-atlas-dimension-select', 'gib-atlas-map-detail-analysis', 'gib-atlas-map-stage', 'gib-atlas-color-key']) {
   if (!styles.includes(marker)) throw new Error(`Styles are missing ${marker}`);
 }
 for (const forbidden of ['gib-search', 'Terrain laboratory', 'gib-atlas-terrain-lab', 'Ridge pen', 'buildLandPartition']) {
@@ -73,5 +73,10 @@ const emotionProfiles = new Map([
 const emotionLayout = await testRuntime.multiRelationalLayout('query', layoutNodes, new Map(), { lens: 'relevance', relationshipField: { weights: { emotion: 1 }, profiles: new Map([['emotion', emotionProfiles]]) } });
 const angle = point => Math.atan2(point.y, point.x), angleDistance = (first, second) => Math.abs(Math.atan2(Math.sin(first - second), Math.cos(first - second)));
 if (!(angleDistance(angle(emotionLayout.get('a.md')), angle(emotionLayout.get('b.md'))) < angleDistance(angle(emotionLayout.get('a.md')), angle(emotionLayout.get('c.md'))))) throw new Error('Emotion profiles do not influence angular placement');
+const radialField = { weights: { emotion: 1 }, profiles: new Map([['emotion', emotionProfiles]]), profilePolar: new Map([
+  ['a.md', { angle: 0, strength: .9 }], ['b.md', { angle: Math.PI / 2, strength: .5 }], ['c.md', { angle: Math.PI, strength: .15 }],
+]) };
+const radialLayout = await testRuntime.multiRelationalLayout('', layoutNodes, new Map(), { lens: 'relevance', vaultCenter: true, relationshipField: radialField });
+for (const [file, polar] of radialField.profilePolar) { const point = radialLayout.get(file), expectedRadius = (.1 + polar.strength * .7) * ((.68 + .55 * .28) / .73); if (!point || angleDistance(angle(point), polar.angle) > .002 || Math.abs(Math.hypot(point.x, point.y) - expectedRadius) > .002) throw new Error('Analytical perspective is not radially organized'); }
 
 console.log(`Gib Atlas ${manifest.version}: graph, local analysis, mobile runtime, and BRAT assets are valid (${(bundle.length / 1024 / 1024).toFixed(1)} MB bundle).`);

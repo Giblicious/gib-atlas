@@ -43,30 +43,30 @@ export const TEXT_SIGNALS = {
 };
 
 const PURPOSE_QUALITIES = [
-  quality('questioning', 'Questioning', 'This passage primarily asks, investigates, or opens a question.'),
-  quality('explaining', 'Explaining', 'This passage primarily explains, defines, or clarifies an idea.'),
-  quality('reflecting', 'Reflecting', 'This passage primarily interprets an experience or works through its meaning.'),
-  quality('persuading', 'Persuading', 'This passage primarily argues for a conclusion or tries to convince the reader.'),
-  quality('comparing', 'Comparing', 'This passage primarily compares, contrasts, or distinguishes alternatives.'),
-  quality('planning', 'Planning', 'This passage primarily decides, plans, instructs, or identifies concrete action.'),
-  quality('summarizing', 'Summarizing', 'This passage primarily condenses or records information without developing a new argument.'),
+  quality('questioning', 'Questioning', 'This passage primarily asks, investigates, or opens a question.', { hue: 194 }),
+  quality('explaining', 'Explaining', 'This passage primarily explains, defines, or clarifies an idea.', { hue: 222 }),
+  quality('reflecting', 'Reflecting', 'This passage primarily interprets an experience or works through its meaning.', { hue: 274 }),
+  quality('persuading', 'Persuading', 'This passage primarily argues for a conclusion or tries to convince the reader.', { hue: 8 }),
+  quality('comparing', 'Comparing', 'This passage primarily compares, contrasts, or distinguishes alternatives.', { hue: 42 }),
+  quality('planning', 'Planning', 'This passage primarily decides, plans, instructs, or identifies concrete action.', { hue: 126 }),
+  quality('summarizing', 'Summarizing', 'This passage primarily condenses or records information without developing a new argument.', { hue: 162 }),
 ];
 
 const POSITION_QUALITIES = [
-  quality('supports', 'Supports', 'The writer supports or affirms the reference claim.'),
-  quality('opposes', 'Opposes', 'The writer rejects or contradicts the reference claim.'),
-  quality('questions', 'Questions', 'The writer questions or tests the reference claim without clearly rejecting it.'),
-  quality('uncertain', 'Uncertain', 'The writer is unsure or unresolved about the reference claim.'),
-  quality('reports', 'Reports', 'The writer reports the reference claim without personally endorsing or rejecting it.'),
+  quality('supports', 'Supports', 'The writer supports or affirms the reference claim.', { hue: 128 }),
+  quality('opposes', 'Opposes', 'The writer rejects or contradicts the reference claim.', { hue: 4 }),
+  quality('questions', 'Questions', 'The writer questions or tests the reference claim without clearly rejecting it.', { hue: 42 }),
+  quality('uncertain', 'Uncertain', 'The writer is unsure or unresolved about the reference claim.', { hue: 278 }),
+  quality('reports', 'Reports', 'The writer reports the reference claim without personally endorsing or rejecting it.', { hue: 208 }),
 ];
 
 const FORM_QUALITIES = [
-  quality('journal', 'Journal reflection', 'This is personal journal writing centered on lived experience, introspection, or self-understanding.'),
-  quality('analysis', 'Analytical essay', 'This is sustained analytical prose using definitions, reasons, distinctions, or evidence.'),
-  quality('conversation', 'Conversation', 'This is dialogue, an interview, or a transcript containing exchanges between speakers.'),
-  quality('reference', 'Reference note', 'This is reference material organized to preserve facts, quotations, sources, or definitions.'),
-  quality('narrative', 'Narrative', 'This is a story or chronological account of events and experiences.'),
-  quality('outline', 'Outline or plan', 'This is an outline, checklist, set of instructions, or structured action plan.'),
+  quality('journal', 'Journal reflection', 'This is personal journal writing centered on lived experience, introspection, or self-understanding.', { hue: 280 }),
+  quality('analysis', 'Analytical essay', 'This is sustained analytical prose using definitions, reasons, distinctions, or evidence.', { hue: 220 }),
+  quality('conversation', 'Conversation', 'This is dialogue, an interview, or a transcript containing exchanges between speakers.', { hue: 28 }),
+  quality('reference', 'Reference note', 'This is reference material organized to preserve facts, quotations, sources, or definitions.', { hue: 170 }),
+  quality('narrative', 'Narrative', 'This is a story or chronological account of events and experiences.', { hue: 338 }),
+  quality('outline', 'Outline or plan', 'This is an outline, checklist, set of instructions, or structured action plan.', { hue: 104 }),
 ];
 
 export const TEXT_SIGNAL_PROFILES = {

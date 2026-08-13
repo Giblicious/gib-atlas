@@ -53,6 +53,10 @@ function mapGroupingLabel(value) { return value === 'topics' ? 'Topics' : value 
 const ATLAS_DIMENSIONS = ['semantic', 'emotion', 'purpose', 'form', 'position'];
 function validAtlasDimension(value) { const signal = validTextSignal(value); return ATLAS_DIMENSIONS.includes(signal) ? signal : 'semantic'; }
 function atlasDimensionLabel(value) { return TEXT_SIGNALS[validAtlasDimension(value)]?.label || 'Meaning'; }
+function atlasColorKeyEntries(value) {
+  const dimension = validAtlasDimension(value);
+  return (TEXT_SIGNAL_PROFILES[dimension] || []).map(item => ({ key: item.key, label: item.name, hue: atlasProfileHue(dimension, `${dimension}:${item.key}`) }));
+}
 function configureAtlasDimensionSelect(select, plugin, onChange) {
   if (!select) return;
   for (const value of ATLAS_DIMENSIONS) select.createEl('option', { text: atlasDimensionLabel(value), attr: { value } });
@@ -69,17 +73,24 @@ function atlasProfileHue(signal, category) {
   let hash = 2166136261; for (const character of String(category || signal)) { hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16777619); }
   return ((hash >>> 0) * 137.508) % 360;
 }
+function atlasProfilePolar(signal, profile) {
+  const scores = Object.entries(profile?.scores || {}).map(([category, value]) => ({ category, value: Math.max(0, Math.min(1, Number(value) || 0)), hue: atlasProfileHue(signal, category) })).filter(item => item.value > .001);
+  if (!scores.length) return { angle: 0, strength: 0, hue: 0, concentration: 0 };
+  const total = scores.reduce((sum, item) => sum + item.value, 0) || 1, x = scores.reduce((sum, item) => sum + Math.cos(item.hue * Math.PI / 180) * item.value, 0), y = scores.reduce((sum, item) => sum + Math.sin(item.hue * Math.PI / 180) * item.value, 0), concentration = Math.max(0, Math.min(1, Math.hypot(x, y) / total)), maximum = Math.max(...scores.map(item => item.value)), angle = Math.atan2(y, x), hue = (angle * 180 / Math.PI + 360) % 360, strength = Math.max(0, Math.min(1, maximum * (.55 + concentration * .45)));
+  return { angle, strength, hue, concentration };
+}
 function atlasProfileDetails(signal, profile) {
   const ranked = Object.entries(profile?.scores || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
   if (!ranked.length) return null;
-  const [category, score] = ranked[0], definition = (TEXT_SIGNAL_PROFILES[signal] || []).find(item => `${signal}:${item.key}` === category);
-  return { signal, category, label: definition?.name || category.split(':').pop(), score: Number(score || 0), evidence: profile?.evidence?.[category] || '', hue: atlasProfileHue(signal, category) };
+  const [category, score] = ranked[0], definition = (TEXT_SIGNAL_PROFILES[signal] || []).find(item => `${signal}:${item.key}` === category), polar = atlasProfilePolar(signal, profile);
+  return { signal, category, label: definition?.name || category.split(':').pop(), score: Number(score || 0), evidence: profile?.evidence?.[category] || '', hue: polar.hue, strength: polar.strength, concentration: polar.concentration };
 }
 async function atlasRelationshipField(plugin, dimensionValue, files) {
   const dimension = validAtlasDimension(dimensionValue), reference = dimension === 'position' ? String(plugin.settings.atlasPositionReference || '').trim() : '';
   if (dimension === 'semantic' || dimension === 'position' && !reference) return { dimension: 'semantic', field: null, profiles: new Map() };
   const profiles = await plugin.search.textSignalProfiles(dimension, files, reference);
-  return { dimension, profiles, field: { weights: { [dimension]: 1 }, profiles: new Map([[dimension, profiles]]), reference, dynamics: { contrast: .58, spacing: .55 } } };
+  const profilePolar = new Map([...profiles].map(([file, profile]) => [file, atlasProfilePolar(dimension, profile)]));
+  return { dimension, profiles, field: { weights: { [dimension]: 1 }, profiles: new Map([[dimension, profiles]]), profilePolar, reference, dynamics: { contrast: .58, spacing: .55 } } };
 }
 function applyAtlasProfiles(nodes, analysis) {
   if (!analysis?.profiles?.size) return nodes;
@@ -931,7 +942,8 @@ class GraphView extends ItemView {
     const search = this.contentEl.createDiv({ cls: 'gib-graph-search' }), searchIcon = search.createSpan({ cls: 'gib-graph-search-icon' }); setIcon(searchIcon, 'search');
     this.input = search.createEl('input', { type: 'search', placeholder: 'Preparing vault map…', attr: { 'aria-label': 'Search semantic map', disabled: 'true' } });
     this.clearButton = search.createEl('button', { attr: { type: 'button', title: 'Clear search', 'aria-label': 'Clear search' } }); setIcon(this.clearButton, 'x');
-    this.dimensionSelect = search.createEl('select', { cls: 'dropdown gib-atlas-dimension-select', attr: { 'aria-label': 'Atlas dimension' } }); configureAtlasDimensionSelect(this.dimensionSelect, this.plugin, () => this.query.length >= 3 ? this.runSearch(this.query, true) : this.loadVault());
+    this.dimensionSelect = search.createEl('select', { cls: 'dropdown gib-atlas-dimension-select', attr: { 'aria-label': 'Atlas dimension' } }); configureAtlasDimensionSelect(this.dimensionSelect, this.plugin, async () => { this.renderColorKey(); await (this.query.length >= 3 ? this.runSearch(this.query, true) : this.loadVault()); });
+    this.colorKey = this.contentEl.createDiv({ cls: 'gib-atlas-color-key', attr: { 'aria-label': 'Atlas color key' } }); this.renderColorKey();
     this.scopeBar = this.contentEl.createDiv({ cls: 'gib-graph-scope', attr: { 'aria-label': 'Semantic scope' } }); this.renderScopeBreadcrumbs();
     this.resultsPanel = this.contentEl.createDiv({ cls: 'gib-graph-results-panel' }); const resultHeader = this.resultsPanel.createDiv({ cls: 'gib-graph-results-header' }); this.resultTitle = resultHeader.createSpan({ text: 'Results' }); this.resultStatus = resultHeader.createSpan({ cls: 'gib-graph-results-status' }); this.collapseButton = resultHeader.createEl('button', { attr: { type: 'button', title: 'Collapse results', 'aria-label': 'Collapse results' } }); setIcon(this.collapseButton, 'panel-left-close'); this.resultList = this.resultsPanel.createDiv({ cls: 'gib-graph-results-list' }); this.resultsPanel.hide(); this.contentEl.addClass('is-results-collapsed');
     this.reopenButton = this.contentEl.createEl('button', { cls: 'gib-graph-results-reopen', attr: { type: 'button', title: 'Show results', 'aria-label': 'Show results' } }); setIcon(this.reopenButton, 'panel-left-open'); this.reopenButton.hide();
@@ -945,6 +957,11 @@ class GraphView extends ItemView {
     this.input.addEventListener('input', () => this.handleQuery(this.input.value)); this.clearButton.addEventListener('click', () => { this.input.value = ''; this.handleQuery(''); this.input.focus(); }); this.collapseButton.addEventListener('click', () => this.setResultsCollapsed(true)); this.reopenButton.addEventListener('click', () => this.setResultsCollapsed(false)); previewOpen.addEventListener('click', () => this.openFile(this.previewFilePath)); previewClose.addEventListener('click', () => this.closePreview());
     this.graphCacheOff = this.plugin.search.onGraphCache(() => { if (this.query.length < 3) this.loadVault(); });
     await this.loadVault(); this.input.disabled = false; this.input.placeholder = 'Search the vault by meaning…'; this.input.focus();
+  }
+  renderColorKey() {
+    if (!this.colorKey) return; const dimension = validAtlasDimension(this.plugin.settings.atlasDimension), entries = atlasColorKeyEntries(dimension); this.colorKey.empty(); this.colorKey.createDiv({ cls: 'gib-atlas-color-key-title', text: atlasDimensionLabel(dimension) });
+    if (!entries.length) { this.colorKey.createDiv({ cls: 'gib-atlas-color-key-gradient' }); this.colorKey.createDiv({ cls: 'gib-atlas-color-key-note', text: 'Relative concept colors' }); return; }
+    this.colorKey.createDiv({ cls: 'gib-atlas-color-key-note', text: 'Pure 100% endpoints' }); const list = this.colorKey.createDiv({ cls: 'gib-atlas-color-key-list' }); for (const entry of entries) { const row = list.createDiv({ cls: 'gib-atlas-color-key-item', attr: { title: `100% ${entry.label}` } }); row.createSpan({ cls: 'gib-atlas-color-key-dot', attr: { style: `--gib-key-hue:${entry.hue}` } }); row.createSpan({ text: entry.label }); }
   }
   setResultsCollapsed(value) { this.resultsCollapsed = Boolean(value); this.resultsPanel.toggleClass('is-collapsed', this.resultsCollapsed); this.contentEl.toggleClass('is-results-collapsed', this.resultsCollapsed); this.resultsPanel.toggle(!this.resultsCollapsed); this.reopenButton.toggle(this.resultsCollapsed && this.query.length >= 3); window.setTimeout(() => this.map?.draw(), 0); }
   indexableFiles() { return this.app.vault.getFiles().filter(file => /\.(?:md|txt|markdown)$/i.test(file.path)); }
