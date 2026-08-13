@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.8
+
+- Add Semantic Fabric as an alternate live visualization for the search and dedicated Atlas maps.
+- Bundle semantic relationships through shared neighborhood knots, with query-result bindings and focused strand emphasis.
+- Persist the Terrain/Fabric choice and expose it as both an in-map control and a native plugin setting.
+- Keep the fabric renderer mobile-aware by limiting visible relationship strands without changing graph data or search ranking.
+
 ## 0.6.7
 
 - Separates physics updates from display rendering so expensive simulation can run at a controlled rate while motion renders every animation frame.
